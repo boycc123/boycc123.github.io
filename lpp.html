@@ -111,6 +111,8 @@
     <span id="span_dt_dt"></span>
 </p>
 <script language="javascript">
+	var myAuto = document.getElementById('audio');  
+        myAuto.play();  
     function show_date_time() {
         window.setTimeout("show_date_time()", 1000);
 		//你俩在一起的那天
@@ -673,7 +675,7 @@
     }());
     S.init();
 </script>
-<embed src="马嘉祺 _ 严浩翔 - 若想念飞行.mp3" width=170 height=25 loop="true" autostart="true">
+<audio id="audio" src="马嘉祺 _ 严浩翔 - 若想念飞行.mp3" style="opacity:0" preload="auto" controls loop hidden="true"/>
 </body>
 </html>
 
